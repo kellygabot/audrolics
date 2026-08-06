@@ -1,0 +1,13 @@
+# Backend
+__pycache__/
+.venv/
+
+# Environment variables
+.env
+*.local
+
+# Editor configs
+.vscode/
+.idea/
+.codex
+.agents
