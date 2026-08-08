@@ -179,7 +179,7 @@ Do not silently normalize the UI inputs into a single displayed unit system. Nor
 cd backend
 uv sync
 cp sample.env .env
-uv run fastapi dev src/backend/main.py
+uv run fastapi dev
 ```
 
 The API should be available at `http://localhost:8000`. FastAPI documentation should be available at `http://localhost:8000/docs`.
