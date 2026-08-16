@@ -1,36 +1,69 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Audrolics Frontend
 
-## Getting Started
+This is the Next.js frontend for Audrolics. The root `README.md` and SRS PDF in `../documents/` define the product requirements; this file is only frontend-specific orientation.
 
-First, run the development server:
+## Responsibilities
+
+The frontend owns the browser-based schematic builder and user-facing workflows:
+
+- Landing page with product description and login/signup calls to action.
+- Email/password login and signup screens.
+- Diagram builder canvas for junctions, reservoirs, tanks, pipes, pumps, valves, and filters.
+- Properties panel for element input parameters.
+- Read-only display of computed simulation results.
+- Manual measurement entry for node pressure/head and link flow.
+- Visual anomaly results with confidence and manual-review warnings.
+- Export controls for PNG, SVG, CSV, and JSON.
+
+Keep input parameters separate from computed results in UI state. Computed fields should look read-only and should not be editable.
+
+## Diagram Builder Requirements
+
+The builder should support:
+
+- Snap-to-connect within 10 px.
+- Pan, zoom from 50% to 200%, and fit-to-view.
+- Multi-select with Shift+click or drag-box.
+- Delete by keyboard and context menu.
+- Copy/paste with auto-incremented labels.
+- Undo/redo with at least 50 actions.
+- `localStorage` recovery backup every 30 seconds.
+- Browser close warning when unsaved changes exist.
+- Right-panel width between 280 px and 480 px.
+- Attribute visibility toggles for length, diameter, pressure, flow, and elevation.
+- Curve editor with live mini-chart for pump curves and GPV valve curves.
+- Pattern/texture anomaly highlights in addition to color.
+
+## Development
+
+Run the development server:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000) with your browser.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Run linting:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm run lint
+```
 
-## Learn More
+Build for production:
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+npm run build
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## API
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+When backend calls are implemented, read the backend base URL from:
 
-## Deploy on Vercel
+```env
+NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Production should point this to the Render backend. Do not hardcode localhost in components or client data modules.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+All non-auth API calls require bearer-token authorization per the SRS.
