@@ -64,3 +64,83 @@ def test_invalid_section_3_input_is_rejected() -> None:
     response = client.post("/api/v1/schematics", json=payload, headers={"X-User-Id": "alpha"})
 
     assert response.status_code == 422
+
+
+def test_element_payloads_get_srs_computed_defaults() -> None:
+    client = client_with_repo()
+    payload = valid_payload()
+    payload["nodes"].append(
+        {
+            "id": "node-2",
+            "label": "R-1",
+            "type": "RESERVOIR",
+            "x": 100,
+            "y": 20,
+            "input_params": {"total_head": 20},
+        }
+    )
+    payload["links"].append(
+        {
+            "id": "link-1",
+            "label": "P-1",
+            "type": "PIPE",
+            "from_node_id": "node-2",
+            "to_node_id": "node-1",
+            "input_params": {
+                "length": 100,
+                "diameter": 150,
+                "roughness": 140,
+                "minor_loss_coeff": 0,
+                "status": "OPEN",
+            },
+        }
+    )
+
+    response = client.post("/api/v1/schematics", json=payload, headers={"X-User-Id": "alpha"})
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["nodes"][0]["computed"] == {"pressure_head": None, "actual_demand": None}
+    assert body["nodes"][1]["computed"] == {"outflow": None}
+    assert body["links"][0]["computed"] == {
+        "flow_rate": None,
+        "velocity": None,
+        "headloss": None,
+        "unit_headloss": None,
+    }
+
+
+def test_wrong_element_input_params_are_rejected() -> None:
+    client = client_with_repo()
+    payload = valid_payload()
+    payload["nodes"][0]["input_params"] = {"elevation": 0, "base_demand": 1, "diameter": 150}
+
+    response = client.post("/api/v1/schematics", json=payload, headers={"X-User-Id": "alpha"})
+
+    assert response.status_code == 422
+
+
+def test_measurements_default_entered_at_and_validate_element_type() -> None:
+    client = client_with_repo()
+    payload = valid_payload()
+    payload["measurements"] = [
+        {
+            "id": "measurement-1",
+            "element_id": "node-1",
+            "element_type": "NODE",
+            "measurement_type": "PRESSURE_HEAD",
+            "value": 12.5,
+            "unit": "m",
+            "timestamp": "2026-08-18T12:00:00+08:00",
+        }
+    ]
+
+    response = client.post("/api/v1/schematics", json=payload, headers={"X-User-Id": "alpha"})
+
+    assert response.status_code == 201
+    measurement = response.json()["measurements"][0]
+    assert measurement["entered_at"] is not None
+
+    payload["measurements"][0]["element_id"] = "missing-node"
+    invalid = client.post("/api/v1/schematics", json=payload, headers={"X-User-Id": "alpha"})
+    assert invalid.status_code == 422
