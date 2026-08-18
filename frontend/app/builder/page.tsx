@@ -2,6 +2,7 @@
 
 import {
   type KeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   useEffect,
   useMemo,
@@ -9,6 +10,17 @@ import {
   useState,
 } from "react";
 
+import {
+  fitToView,
+  validateFieldValue,
+  validateTankLevels,
+} from "../../lib/builder-rules";
+import {
+  deleteSchematic as deleteStoredSchematic,
+  listSchematics,
+  loadSchematic as loadStoredSchematic,
+  saveSchematic as saveStoredSchematic,
+} from "../../lib/builder-storage";
 
 // Elements, types and necessary variables
 type NodeType = "JUNCTION" | "RESERVOIR" | "TANK";
@@ -84,8 +96,8 @@ type DragState =
   | { kind: "select"; pointerId: number; start: Point; current: Point };
 
 type Point = { x: number; y: number };
+type ContextMenuState = { x: number; y: number; selection: Selection } | null;
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 const MIN_ZOOM = 50;
 const MAX_ZOOM = 200;
 const ZOOM_STEP = 10;
@@ -103,7 +115,7 @@ const linkTools: { type: LinkType; label: string; code: string; detail: string }
   { type: "PIPE", label: "Pipe", code: "P", detail: "Straight line" },
   { type: "PUMP", label: "Pump", code: "PU", detail: "Pump symbol" },
   { type: "VALVE", label: "Valve", code: "V", detail: "Typed valve" },
-  { type: "FILTER", label: "Filter", code: "F", detail: "Dashed diamond" },
+  { type: "FILTER", label: "Strainer / Filter", code: "F", detail: "Dashed diamond" },
 ];
 
 const defaultModel = (): SchematicModel => ({
@@ -124,6 +136,7 @@ const defaultModel = (): SchematicModel => ({
 });
 
 const readRecoveryModel = (): SchematicModel | null => {
+  if (typeof window === "undefined" || !window.localStorage) return null;
   const raw = window.localStorage.getItem(RECOVERY_KEY);
   if (!raw) return null;
   try {
@@ -157,9 +170,14 @@ export default function BuilderPage() {
   const [showAllErrors, setShowAllErrors] = useState(false);
   const [devUserId, setDevUserId] = useState("dev-user");
   const [schematicList, setSchematicList] = useState<{ id: string; name: string; updated_at: string }[]>([]);
-  const [statusMessage, setStatusMessage] = useState("Ready");
+  const [selectedSavedSchematicId, setSelectedSavedSchematicId] = useState("");
+  const [statusMessage, setStatusMessage] = useState("Ready to build");
   const [rightPanelWidth, setRightPanelWidth] = useState(340);
   const [isResizingPanel, setIsResizingPanel] = useState(false);
+  const [recoveryCandidate, setRecoveryCandidate] = useState<SchematicModel | null>(null);
+  const [lastSavedSnapshot, setLastSavedSnapshot] = useState(() => JSON.stringify(toApiPayload(defaultModel())));
+  const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
+  const [pendingSavedDelete, setPendingSavedDelete] = useState<string | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   // Node dragging updates live without pushing every pointer move into history.
@@ -179,13 +197,10 @@ export default function BuilderPage() {
   const cursorClass = isPanning || isResizingPanel ? "cursor-grabbing" : isSpacePressed ? "cursor-grab" : "cursor-crosshair";
 
   useEffect(() => {
-    // Keep the first client render identical to SSR, then recover localStorage.
-    // Reading recovery data in the state initializer causes SVG hydration mismatches.
+    // Keep the first client render identical to SSR, then offer recovery.
     const timeout = window.setTimeout(() => {
       const recovered = readRecoveryModel();
-      if (!recovered) return;
-      setModel(recovered);
-      setStatusMessage("Recovered local draft");
+      if (recovered) setRecoveryCandidate(recovered);
     }, 0);
     return () => window.clearTimeout(timeout);
   }, []);
@@ -201,12 +216,12 @@ export default function BuilderPage() {
   useEffect(() => {
     // Warn only after a diagram edit has created undo history.
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
-      if (history.past.length === 0) return;
+      if (JSON.stringify(toApiPayload(model)) === lastSavedSnapshot) return;
       event.preventDefault();
     };
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
-  }, [history.past.length]);
+  }, [lastSavedSnapshot, model]);
 
   useEffect(() => {
     if (!isResizingPanel) return;
@@ -272,6 +287,33 @@ export default function BuilderPage() {
 
   function nudgeZoom(delta: number) {
     updateZoom(model.canvas_state.zoom + delta);
+  }
+
+  function fitDiagramToView() {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    const nextCanvasState = fitToView(model.nodes, {
+      width: rect?.width ?? 0,
+      height: rect?.height ?? 0,
+    });
+    setViewport(nextCanvasState);
+    setStatusMessage(model.nodes.length === 0 ? "Canvas reset to 100%" : "Diagram fitted to view");
+  }
+
+  function restoreRecoveryDraft() {
+    if (!recoveryCandidate) return;
+    setModel(recoveryCandidate);
+    setSelection([]);
+    setHistory({ past: [], future: [] });
+    setShowAllErrors(false);
+    setLastSavedSnapshot(JSON.stringify(toApiPayload(recoveryCandidate)));
+    setRecoveryCandidate(null);
+    setStatusMessage("Local draft restored");
+  }
+
+  function discardRecoveryDraft() {
+    window.localStorage.removeItem(RECOVERY_KEY);
+    setRecoveryCandidate(null);
+    setStatusMessage("Local draft discarded");
   }
 
   function screenToWorld(clientX: number, clientY: number): Point {
@@ -344,6 +386,7 @@ export default function BuilderPage() {
   function handleCanvasPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
     // Canvas pointer ownership is split by mode: pan, node placement, or drag-box
     // selection. Element-specific handlers stop propagation before this runs.
+    setContextMenu(null);
     if (event.target !== event.currentTarget && (event.target as Element).closest("[data-element-id]")) return;
     const world = screenToWorld(event.clientX, event.clientY);
     if (event.button === 1 || (event.button === 0 && isSpacePressed)) {
@@ -428,6 +471,7 @@ export default function BuilderPage() {
 
   function handleNodePointerDown(event: ReactPointerEvent<SVGGElement>, node: BuilderNode) {
     event.stopPropagation();
+    setContextMenu(null);
     const world = screenToWorld(event.clientX, event.clientY);
     if (isLinkTool(activeTool)) {
       setPendingLink({ type: activeTool, fromNodeId: node.id, cursor: world });
@@ -458,6 +502,7 @@ export default function BuilderPage() {
 
   function handleLinkPointerDown(event: ReactPointerEvent<SVGGElement>, link: BuilderLink) {
     event.stopPropagation();
+    setContextMenu(null);
     setSelection(event.shiftKey ? toggleSelection(selection, { kind: "link", id: link.id }) : [{ kind: "link", id: link.id }]);
   }
 
@@ -547,8 +592,13 @@ export default function BuilderPage() {
 
   function deleteSelection() {
     if (selection.length === 0) return;
-    const nodeIds = new Set(selection.filter((item) => item.kind === "node").map((item) => item.id));
-    const linkIds = new Set(selection.filter((item) => item.kind === "link").map((item) => item.id));
+    deleteItems(selection);
+  }
+
+  function deleteItems(items: Selection[]) {
+    if (items.length === 0) return;
+    const nodeIds = new Set(items.filter((item) => item.kind === "node").map((item) => item.id));
+    const linkIds = new Set(items.filter((item) => item.kind === "link").map((item) => item.id));
     commit(
       (draft) => ({
         ...draft,
@@ -558,6 +608,19 @@ export default function BuilderPage() {
       "Selection deleted",
     );
     setSelection([]);
+  }
+
+  function openElementContextMenu(event: ReactMouseEvent<SVGGElement>, item: Selection) {
+    event.preventDefault();
+    event.stopPropagation();
+    setSelection([item]);
+    setContextMenu({ x: event.clientX, y: event.clientY, selection: item });
+  }
+
+  function deleteContextSelection() {
+    if (!contextMenu) return;
+    deleteItems([contextMenu.selection]);
+    setContextMenu(null);
   }
 
   function updateNodeParam(nodeId: string, key: string, value: FieldValue) {
@@ -584,70 +647,65 @@ export default function BuilderPage() {
   }
 
   async function saveSchematic() {
-    // Client validation gives immediate UX feedback; the backend still repeats
-    // Section 3 validation so direct API calls cannot persist invalid diagrams.
     setShowAllErrors(true);
     const errors = validateModel(model);
     if (Object.keys(errors).length > 0) {
-      setStatusMessage("Fix validation errors before saving");
+      setStatusMessage("Fix the highlighted fields before saving this schematic");
       return;
     }
-    const payload = toApiPayload(model);
-    const method = model.id ? "PUT" : "POST";
-    const url = model.id ? `${API_BASE}/api/v1/schematics/${model.id}` : `${API_BASE}/api/v1/schematics`;
-    const response = await fetch(url, {
-      method,
-      headers: { "Content-Type": "application/json", "X-User-Id": devUserId },
-      body: JSON.stringify(payload),
-    });
-    if (!response.ok) {
-      setStatusMessage(`Save failed (${response.status})`);
-      return;
-    }
-    const saved = await response.json();
+    const saved = await saveStoredSchematic(devUserId, toApiPayload(model));
     setModel(fromApiPayload(saved));
     setHistory({ past: [], future: [] });
-    setStatusMessage("Saved");
+    setLastSavedSnapshot(JSON.stringify(saved));
+    setStatusMessage(`Saved "${saved.name}" to this browser`);
     void loadSchematicList();
   }
 
   async function loadSchematicList() {
-    const response = await fetch(`${API_BASE}/api/v1/schematics`, { headers: { "X-User-Id": devUserId } });
-    if (!response.ok) {
-      setStatusMessage(`Load list failed (${response.status})`);
-      return;
+    const schematics = await listSchematics(devUserId);
+    setSchematicList(schematics);
+    if (selectedSavedSchematicId && !schematics.some((schematic) => schematic.id === selectedSavedSchematicId)) {
+      setSelectedSavedSchematicId("");
     }
-    setSchematicList(await response.json());
+    setStatusMessage(schematics.length === 0 ? "No saved schematics in this browser" : `Found ${schematics.length} saved schematic${schematics.length === 1 ? "" : "s"}`);
   }
 
   async function loadSchematic(schematicId: string) {
     if (!schematicId) return;
-    const response = await fetch(`${API_BASE}/api/v1/schematics/${schematicId}`, { headers: { "X-User-Id": devUserId } });
-    if (!response.ok) {
-      setStatusMessage(`Load failed (${response.status})`);
+    const loaded = await loadStoredSchematic<SchematicModel>(devUserId, schematicId);
+    if (!loaded) {
+      setStatusMessage("That saved schematic is no longer available");
       return;
     }
-    setModel(fromApiPayload(await response.json()));
+    setModel(fromApiPayload(loaded));
     setSelection([]);
     setHistory({ past: [], future: [] });
     setShowAllErrors(false);
-    setStatusMessage("Loaded");
+    setLastSavedSnapshot(JSON.stringify(toApiPayload(fromApiPayload(loaded))));
+    setStatusMessage(`Loaded "${loaded.name}"`);
   }
 
   async function deleteSchematic() {
     if (!model.id) return;
-    const response = await fetch(`${API_BASE}/api/v1/schematics/${model.id}`, {
-      method: "DELETE",
-      headers: { "X-User-Id": devUserId },
-    });
-    if (!response.ok) {
-      setStatusMessage(`Delete failed (${response.status})`);
+    setPendingSavedDelete(model.id);
+  }
+
+  async function confirmDeleteSchematic() {
+    if (!pendingSavedDelete) return;
+    const deleted = await deleteStoredSchematic(devUserId, pendingSavedDelete);
+    if (!deleted) {
+      setStatusMessage("That saved schematic was already deleted");
+      setPendingSavedDelete(null);
       return;
     }
-    setModel(defaultModel());
+    const blank = defaultModel();
+    setModel(blank);
     setSelection([]);
     setHistory({ past: [], future: [] });
-    setStatusMessage("Deleted");
+    setLastSavedSnapshot(JSON.stringify(toApiPayload(blank)));
+    setSelectedSavedSchematicId("");
+    setPendingSavedDelete(null);
+    setStatusMessage("Saved schematic deleted from this browser");
     void loadSchematicList();
   }
 
@@ -734,7 +792,71 @@ export default function BuilderPage() {
           />
           <ToolbarButton label="+" onClick={() => nudgeZoom(ZOOM_STEP)} />
           <output className="w-14 text-right text-xs tabular-nums text-slate-600">{model.canvas_state.zoom}%</output>
-          <ToolbarButton label="Fit" onClick={() => setViewport({ zoom: 100, pan: { x: 0, y: 0 } })} />
+          <ToolbarButton label="Fit" onClick={fitDiagramToView} />
+          <div className="mx-1 h-7 w-px bg-slate-300" />
+          <label className="flex items-center gap-1 text-xs font-medium text-slate-600">
+            Line
+            <input
+              aria-label="Line color"
+              type="color"
+              value={model.styling.line_color}
+              onChange={(event) => setModel((current) => ({ ...current, styling: { ...current.styling, line_color: event.target.value } }))}
+              className="h-8 w-9 rounded border border-slate-300 bg-white"
+            />
+          </label>
+          <label className="flex items-center gap-1 text-xs font-medium text-slate-600">
+            Width
+            <input
+              aria-label="Line thickness"
+              type="number"
+              min="1"
+              max="8"
+              value={model.styling.line_thickness}
+              onChange={(event) => setModel((current) => ({ ...current, styling: { ...current.styling, line_thickness: clamp(Number(event.target.value), 1, 8) } }))}
+              className="h-8 w-14 rounded border border-slate-300 px-2 text-xs"
+            />
+          </label>
+          <label className="flex items-center gap-1 text-xs font-medium text-slate-600">
+            Symbols
+            <input
+              aria-label="Symbol size"
+              type="number"
+              min="0.5"
+              max="2"
+              step="0.1"
+              value={model.styling.symbol_size}
+              onChange={(event) => setModel((current) => ({ ...current, styling: { ...current.styling, symbol_size: clamp(Number(event.target.value), 0.5, 2) } }))}
+              className="h-8 w-14 rounded border border-slate-300 px-2 text-xs"
+            />
+          </label>
+          <details className="relative">
+            <summary className="flex h-8 cursor-pointer list-none items-center rounded border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 shadow-sm hover:border-cyan-700 hover:text-cyan-800">
+              Strainer settings
+            </summary>
+            <div className="absolute right-0 z-20 mt-2 w-64 rounded border border-slate-300 bg-white p-3 shadow-lg">
+              <p className="mb-3 text-xs text-slate-600">Headloss multipliers saved with this schematic.</p>
+              {(Object.entries(model.filter_multipliers) as [keyof SchematicModel["filter_multipliers"], number][]).map(([key, value]) => (
+                <label key={key} className="mb-2 flex items-center justify-between gap-3 text-xs font-medium capitalize text-slate-600">
+                  <span>{key.replaceAll("_", " ")}</span>
+                  <input
+                    aria-label={`${key.replaceAll("_", " ")} multiplier`}
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    value={value}
+                    onChange={(event) => {
+                      const nextValue = Math.max(0, Number(event.target.value));
+                      setModel((current) => ({
+                        ...current,
+                        filter_multipliers: { ...current.filter_multipliers, [key]: nextValue },
+                      }));
+                    }}
+                    className="h-8 w-20 rounded border border-slate-300 px-2 text-xs"
+                  />
+                </label>
+              ))}
+            </div>
+          </details>
         </div>
 
         <div className="flex items-center gap-2">
@@ -745,6 +867,16 @@ export default function BuilderPage() {
           <ToolbarButton label="Delete" disabled={!model.id} onClick={deleteSchematic} />
         </div>
       </header>
+
+      {recoveryCandidate && (
+        <div className="flex shrink-0 items-center justify-between border-b border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-950">
+          <span>A local draft is available from this browser.</span>
+          <div className="flex items-center gap-2">
+            <ToolbarButton label="Restore local draft" onClick={restoreRecoveryDraft} />
+            <ToolbarButton label="Discard draft" onClick={discardRecoveryDraft} />
+          </div>
+        </div>
+      )}
 
       <div className="grid min-h-0 flex-1" style={{ gridTemplateColumns: `280px minmax(0, 1fr) ${rightPanelWidth}px` }}>
         <aside className="flex min-h-0 flex-col border-r border-slate-300 bg-white">
@@ -772,10 +904,23 @@ export default function BuilderPage() {
 
             <section className="mt-4 rounded border border-slate-200 bg-white p-3">
               <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Saved Schematics</h2>
-              <select className="mt-3 h-9 w-full rounded border border-slate-300 text-sm" onChange={(event) => loadSchematic(event.target.value)} defaultValue="">
+              <select
+                className="mt-3 h-9 w-full rounded border border-slate-300 text-sm"
+                onChange={(event) => setSelectedSavedSchematicId(event.target.value)}
+                value={selectedSavedSchematicId}
+                aria-label="Saved schematic"
+              >
                 <option value="">Select to load</option>
                 {schematicList.map((schematic) => <option key={schematic.id} value={schematic.id}>{schematic.name}</option>)}
               </select>
+              <button
+                type="button"
+                disabled={!selectedSavedSchematicId}
+                onClick={() => loadSchematic(selectedSavedSchematicId)}
+                className="mt-2 h-8 w-full rounded border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 shadow-sm transition hover:border-cyan-700 hover:text-cyan-800 focus-visible:outline focus-visible:outline-offset-2 focus-visible:outline-cyan-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 disabled:shadow-none"
+              >
+                Load selected schematic
+              </button>
             </section>
           </div>
         </aside>
@@ -838,7 +983,14 @@ export default function BuilderPage() {
               <g transform={transform}>
                 <rect x="-2400" y="-1800" width="4800" height="3600" fill="url(#major-grid)" />
                 {model.links.map((link) => (
-                  <LinkShape key={link.id} link={link} model={model} selected={selection.some((item) => item.kind === "link" && item.id === link.id)} onPointerDown={handleLinkPointerDown} />
+                  <LinkShape
+                    key={link.id}
+                    link={link}
+                    model={model}
+                    selected={selection.some((item) => item.kind === "link" && item.id === link.id)}
+                    onPointerDown={handleLinkPointerDown}
+                    onContextMenu={(event) => openElementContextMenu(event, { kind: "link", id: link.id })}
+                  />
                 ))}
                 {pendingLink && <PendingLink model={model} pendingLink={pendingLink} />}
                 {model.nodes.map((node) => (
@@ -849,6 +1001,7 @@ export default function BuilderPage() {
                     selected={selection.some((item) => item.kind === "node" && item.id === node.id)}
                     onPointerDown={handleNodePointerDown}
                     onPointerUp={handleNodeClick}
+                    onContextMenu={(event) => openElementContextMenu(event, { kind: "node", id: node.id })}
                   />
                 ))}
                 {selectionBox && <rect x={selectionBox.x} y={selectionBox.y} width={selectionBox.width} height={selectionBox.height} fill="rgba(14,116,144,0.08)" stroke="#0e7490" strokeDasharray="6 4" />}
@@ -900,6 +1053,50 @@ export default function BuilderPage() {
           </div>
         </aside>
       </div>
+
+      {contextMenu && (
+        <div
+          className="fixed z-30 w-44 rounded border border-slate-300 bg-white p-1 text-sm shadow-lg"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          role="menu"
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={deleteContextSelection}
+            className="w-full rounded px-3 py-2 text-left text-slate-700 hover:bg-red-50 hover:text-red-700"
+          >
+            Delete element
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => setContextMenu(null)}
+            className="w-full rounded px-3 py-2 text-left text-slate-700 hover:bg-slate-100"
+          >
+            Keep element
+          </button>
+        </div>
+      )}
+
+      {pendingSavedDelete && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/30 p-6">
+          <section className="w-full max-w-sm rounded border border-slate-300 bg-white p-5 shadow-lg">
+            <h2 className="text-base font-semibold text-slate-950">Delete saved schematic?</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">This removes the saved copy from this browser. The action cannot be undone.</p>
+            <div className="mt-5 flex justify-end gap-2">
+              <ToolbarButton label="Keep schematic" onClick={() => setPendingSavedDelete(null)} />
+              <button
+                type="button"
+                onClick={confirmDeleteSchematic}
+                className="h-8 rounded border border-red-700 bg-red-700 px-3 text-xs font-medium text-white shadow-sm transition hover:bg-red-800 focus-visible:outline focus-visible:outline-offset-2 focus-visible:outline-red-700"
+              >
+                Delete saved schematic
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </main>
   );
 }
@@ -949,16 +1146,18 @@ function NodeShape({
   selected,
   onPointerDown,
   onPointerUp,
+  onContextMenu,
 }: {
   node: BuilderNode;
   model: SchematicModel;
   selected: boolean;
   onPointerDown: (event: ReactPointerEvent<SVGGElement>, node: BuilderNode) => void;
   onPointerUp: (event: ReactPointerEvent<SVGGElement>, node: BuilderNode) => void;
+  onContextMenu: (event: ReactMouseEvent<SVGGElement>) => void;
 }) {
   const size = 18 * model.styling.symbol_size;
   return (
-    <g data-element-id={node.id} className="cursor-pointer" onPointerDown={(event) => onPointerDown(event, node)} onPointerUp={(event) => onPointerUp(event, node)}>
+    <g data-element-id={node.id} className="cursor-pointer" onPointerDown={(event) => onPointerDown(event, node)} onPointerUp={(event) => onPointerUp(event, node)} onContextMenu={onContextMenu}>
       {node.type === "JUNCTION" && <circle cx={node.x} cy={node.y} r={size / 2} fill="#e0f2fe" stroke="#075985" strokeWidth={selected ? 4 : 2} />}
       {node.type === "RESERVOIR" && (
         <g>
@@ -968,8 +1167,11 @@ function NodeShape({
       )}
       {node.type === "TANK" && <rect x={node.x - size} y={node.y - size * 0.7} width={size * 2} height={size * 1.4} rx="3" fill="#f0fdfa" stroke="#0f766e" strokeWidth={selected ? 4 : 2} />}
       <text x={node.x + size + 4} y={node.y + 4} fill="#0f172a" fontSize="12" fontWeight="600">{node.label}</text>
-      {model.visibility.elevation && typeof node.input_params.elevation === "string" && node.input_params.elevation !== "" && (
+      {model.visibility.elevation && (typeof node.input_params.elevation === "string" || typeof node.input_params.elevation === "number") && node.input_params.elevation !== "" && (
         <text x={node.x + size + 4} y={node.y + 18} fill="#64748b" fontSize="11">Elev {node.input_params.elevation} m</text>
+      )}
+      {model.visibility.pressure && node.computed.pressure_head !== null && node.computed.pressure_head !== undefined && (
+        <text x={node.x + size + 4} y={node.y + 32} fill="#64748b" fontSize="11">Pressure {node.computed.pressure_head} m</text>
       )}
     </g>
   );
@@ -980,11 +1182,13 @@ function LinkShape({
   model,
   selected,
   onPointerDown,
+  onContextMenu,
 }: {
   link: BuilderLink;
   model: SchematicModel;
   selected: boolean;
   onPointerDown: (event: ReactPointerEvent<SVGGElement>, link: BuilderLink) => void;
+  onContextMenu: (event: ReactMouseEvent<SVGGElement>) => void;
 }) {
   const from = model.nodes.find((node) => node.id === link.from_node_id);
   const to = model.nodes.find((node) => node.id === link.to_node_id);
@@ -992,13 +1196,19 @@ function LinkShape({
   const mid = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
   const stroke = selected ? "#f97316" : model.styling.line_color;
   return (
-    <g data-element-id={link.id} className="cursor-pointer" onPointerDown={(event) => onPointerDown(event, link)}>
+    <g data-element-id={link.id} className="cursor-pointer" onPointerDown={(event) => onPointerDown(event, link)} onContextMenu={onContextMenu}>
       <line x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke="transparent" strokeWidth="18" />
       <line x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke={stroke} strokeWidth={selected ? model.styling.line_thickness + 2 : model.styling.line_thickness} />
       <LinkSymbol link={link} mid={mid} />
       <text x={mid.x + 10} y={mid.y - 8} fill="#0f172a" fontSize="12" fontWeight="600">{link.label}</text>
       {model.visibility.length && typeof link.input_params.length === "string" && link.input_params.length !== "" && (
         <text x={mid.x + 10} y={mid.y + 8} fill="#64748b" fontSize="11">{link.input_params.length} m</text>
+      )}
+      {model.visibility.diameter && (typeof link.input_params.diameter === "string" || typeof link.input_params.diameter === "number") && link.input_params.diameter !== "" && (
+        <text x={mid.x + 10} y={mid.y + 22} fill="#64748b" fontSize="11">Dia {link.input_params.diameter} mm</text>
+      )}
+      {model.visibility.flow && link.computed.flow_rate !== null && link.computed.flow_rate !== undefined && (
+        <text x={mid.x + 10} y={mid.y + 36} fill="#64748b" fontSize="11">Flow {link.computed.flow_rate} L/s</text>
       )}
     </g>
   );
@@ -1230,7 +1440,7 @@ function fieldsForType(type: NodeType | LinkType, params: InputParams): FieldDef
   return [
     { key: "mesh_size", label: "Mesh / Screen Size", kind: "number", unit: "mm" },
     { key: "minor_loss_coeff", label: "Minor Loss Coefficient", kind: "number" },
-    { key: "filter_status", label: "Filter Status", kind: "select", options: ["CLEAN", "PARTIALLY_CLOGGED", "CLOGGED"] },
+    { key: "filter_status", label: "Strainer / Filter Status", kind: "select", options: ["CLEAN", "PARTIALLY_CLOGGED", "CLOGGED"] },
   ];
 }
 
@@ -1281,12 +1491,8 @@ function validateModel(model: SchematicModel): Record<string, string> {
       if (field.kind !== "curve") validateField(`${node.id}.${field.key}`, field, node.input_params[field.key], errors);
     }
     if (node.type === "TANK") {
-      const min = Number(node.input_params.min_level);
-      const initial = Number(node.input_params.initial_level);
-      const max = Number(node.input_params.max_level);
-      if ([min, initial, max].every(Number.isFinite) && !(min <= initial && initial <= max)) {
-        errors[`${node.id}.initial_level`] = "Initial level must be between min and max.";
-      }
+      const tankError = validateTankLevels(node.input_params);
+      if (tankError) errors[`${node.id}.initial_level`] = tankError;
     }
   }
   for (const link of model.links) {
@@ -1299,21 +1505,8 @@ function validateModel(model: SchematicModel): Record<string, string> {
 }
 
 function validateField(path: string, field: FieldDef, value: FieldValue, errors: Record<string, string>) {
-  if (field.kind === "select" && !value) errors[path] = `${field.label} is required.`;
-  if (field.kind === "number") {
-    const parsed = Number(value);
-    if (value === "" || value === undefined || !Number.isFinite(parsed)) errors[path] = `${field.label} must be a number.`;
-    if (parsed < 0 && !["Elevation", "Total Head / Elevation"].includes(field.label)) errors[path] = `${field.label} must be non-negative.`;
-    if (field.key === "roughness" && (parsed < 1 || parsed > 150)) errors[path] = "Roughness must be between 1 and 150.";
-    if (field.key === "length" && parsed > 100000) errors[path] = "Length must be <= 100000 m.";
-    if (["diameter", "speed", "mesh_size", "rated_power", "valve_setting"].includes(field.key) && parsed <= 0) errors[path] = `${field.label} must be greater than 0.`;
-  }
-  if (field.kind === "curve") {
-    const points = Array.isArray(value) ? value : [];
-    if (points.length < 2) errors[path] = `${field.label} needs at least 2 points.`;
-    const parsed = points.map((point) => ({ flow: Number(point.flow), y: Number(point[field.yKey]) }));
-    if (parsed.some((point) => !Number.isFinite(point.flow) || !Number.isFinite(point.y))) errors[path] = "Curve points require numeric flow and value.";
-  }
+  const error = validateFieldValue(field, value);
+  if (error) errors[path] = error;
 }
 
 function toApiPayload(model: SchematicModel) {

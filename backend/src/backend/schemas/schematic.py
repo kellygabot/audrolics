@@ -30,9 +30,139 @@ class MeasurementType(StrEnum):
     FLOW_RATE = "FLOW_RATE"
 
 
+class UserDocument(BaseModel):
+    id: str = Field(alias="_id")
+    email: str
+    password_hash: str
+    created_at: str = Field(default_factory=lambda: utc_now_iso())
+    last_login: str | None = None
+    is_verified: bool = False
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 class Point(BaseModel):
     x: float
     y: float
+
+
+class StrictParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class JunctionInputParams(StrictParams):
+    elevation: float
+    base_demand: float
+    demand_pattern: str | None = None
+
+
+class ReservoirInputParams(StrictParams):
+    total_head: float
+
+
+class TankInputParams(StrictParams):
+    elevation: float
+    diameter: float
+    min_level: float
+    max_level: float
+    initial_level: float
+
+
+class PipeInputParams(StrictParams):
+    length: float
+    diameter: float
+    roughness: float
+    minor_loss_coeff: float
+    status: str
+
+
+class CurvePoint(BaseModel):
+    flow: float
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class PumpCurvePoint(CurvePoint):
+    head: float
+
+
+class GpvCurvePoint(CurvePoint):
+    headloss: float
+
+
+class PumpInputParams(StrictParams):
+    rated_power: float | None = None
+    speed: float
+    status: str
+    pump_curve: list[PumpCurvePoint] = Field(default_factory=list)
+
+
+class ValveInputParams(StrictParams):
+    valve_type: str
+    diameter: float
+    valve_setting: float | None = None
+    status: str
+    gpv_curve: list[GpvCurvePoint] = Field(default_factory=list)
+
+
+class FilterInputParams(StrictParams):
+    mesh_size: float
+    minor_loss_coeff: float
+    filter_status: str
+
+
+class JunctionComputed(BaseModel):
+    pressure_head: float | None = None
+    actual_demand: float | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ReservoirComputed(BaseModel):
+    outflow: float | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class TankComputed(BaseModel):
+    hydraulic_head: float | None = None
+    current_volume: float | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class PipeComputed(BaseModel):
+    flow_rate: float | None = None
+    velocity: float | None = None
+    headloss: float | None = None
+    unit_headloss: float | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class PumpComputed(BaseModel):
+    flow: float | None = None
+    head_added: float | None = None
+    energy: float | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ValveComputed(BaseModel):
+    flow: float | None = None
+    pressure_drop: float | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class FilterComputed(BaseModel):
+    headloss: float | None = None
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class NodePayload(BaseModel):
@@ -43,6 +173,34 @@ class NodePayload(BaseModel):
     y: float
     input_params: dict[str, Any] = Field(default_factory=dict)
     computed: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_typed_payload(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        node_type = data.get("type")
+        input_model: type[BaseModel]
+        computed_model: type[BaseModel]
+        if node_type == NodeType.JUNCTION or node_type == NodeType.JUNCTION.value:
+            input_model = JunctionInputParams
+            computed_model = JunctionComputed
+        elif node_type == NodeType.RESERVOIR or node_type == NodeType.RESERVOIR.value:
+            input_model = ReservoirInputParams
+            computed_model = ReservoirComputed
+        elif node_type == NodeType.TANK or node_type == NodeType.TANK.value:
+            input_model = TankInputParams
+            computed_model = TankComputed
+        else:
+            return data
+
+        normalized = dict(data)
+        normalized["input_params"] = input_model.model_validate(normalized.get("input_params") or {}).model_dump(
+            mode="json",
+            exclude_none=True,
+        )
+        normalized["computed"] = computed_model.model_validate(normalized.get("computed") or {}).model_dump(mode="json")
+        return normalized
 
 
 class LinkPayload(BaseModel):
@@ -55,16 +213,47 @@ class LinkPayload(BaseModel):
     input_params: dict[str, Any] = Field(default_factory=dict)
     computed: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_typed_payload(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        link_type = data.get("type")
+        input_model: type[BaseModel]
+        computed_model: type[BaseModel]
+        if link_type == LinkType.PIPE or link_type == LinkType.PIPE.value:
+            input_model = PipeInputParams
+            computed_model = PipeComputed
+        elif link_type == LinkType.PUMP or link_type == LinkType.PUMP.value:
+            input_model = PumpInputParams
+            computed_model = PumpComputed
+        elif link_type == LinkType.VALVE or link_type == LinkType.VALVE.value:
+            input_model = ValveInputParams
+            computed_model = ValveComputed
+        elif link_type == LinkType.FILTER or link_type == LinkType.FILTER.value:
+            input_model = FilterInputParams
+            computed_model = FilterComputed
+        else:
+            return data
+
+        normalized = dict(data)
+        normalized["input_params"] = input_model.model_validate(normalized.get("input_params") or {}).model_dump(
+            mode="json",
+            exclude_none=True,
+        )
+        normalized["computed"] = computed_model.model_validate(normalized.get("computed") or {}).model_dump(mode="json")
+        return normalized
+
 
 class MeasurementPayload(BaseModel):
     id: str
     element_id: str
     element_type: ElementKind
     measurement_type: MeasurementType
-    value: float | None = None
-    unit: str | None = None
+    value: float
+    unit: str
     timestamp: str | None = None
-    entered_at: str | None = None
+    entered_at: str = Field(default_factory=utc_now_iso)
 
 
 class CanvasState(BaseModel):
@@ -142,10 +331,13 @@ class SchematicBase(BaseModel):
         # persistence because API callers can bypass the browser UI.
         errors: list[str] = []
         node_ids = {node.id for node in self.nodes}
+        link_ids = {link.id for link in self.links}
         for node in self.nodes:
             errors.extend(validate_node(node))
         for link in self.links:
             errors.extend(validate_link(link, node_ids))
+        for measurement in self.measurements:
+            errors.extend(validate_measurement(measurement, node_ids, link_ids))
         if errors:
             raise ValueError("; ".join(errors))
         return self
@@ -165,15 +357,15 @@ class SchematicSummary(BaseModel):
     updated_at: str
 
 
-class SchematicResponse(SchematicBase):
+class SchematicDocument(SchematicBase):
     id: str
     user_id: str
     created_at: str
     updated_at: str
 
 
-def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+class SchematicResponse(SchematicDocument):
+    pass
 
 
 def validate_node(node: NodePayload) -> list[str]:
@@ -247,6 +439,24 @@ def validate_link(link: LinkPayload, node_ids: set[str]) -> list[str]:
     return errors
 
 
+def validate_measurement(
+    measurement: MeasurementPayload,
+    node_ids: set[str],
+    link_ids: set[str],
+) -> list[str]:
+    if measurement.element_type == ElementKind.NODE:
+        if measurement.element_id not in node_ids:
+            return [f"E200 measurement {measurement.id}: element_id must reference a node"]
+        if measurement.measurement_type != MeasurementType.PRESSURE_HEAD:
+            return [f"E200 measurement {measurement.id}: node measurements must use PRESSURE_HEAD"]
+    if measurement.element_type == ElementKind.LINK:
+        if measurement.element_id not in link_ids:
+            return [f"E200 measurement {measurement.id}: element_id must reference a link"]
+        if measurement.measurement_type != MeasurementType.FLOW_RATE:
+            return [f"E200 measurement {measurement.id}: link measurements must use FLOW_RATE"]
+    return []
+
+
 def require_number(
     element: NodePayload | LinkPayload,
     params: dict[str, Any],
@@ -300,9 +510,9 @@ def validate_curve(
         return [f"E201 {element.label}: {key} cannot contain duplicate flow values"]
     if flows != sorted(flows):
         return [f"E201 {element.label}: {key} flow values must increase"]
-    if y_key == "head" and any(values[index] < values[index + 1] for index in range(len(values) - 1)):
+    if y_key == "head" and any(values[index] <= values[index + 1] for index in range(len(values) - 1)):
         return [f"E201 {element.label}: pump head must decrease as flow increases"]
-    if y_key == "headloss" and any(values[index] > values[index + 1] for index in range(len(values) - 1)):
+    if y_key == "headloss" and any(values[index] >= values[index + 1] for index in range(len(values) - 1)):
         return [f"E201 {element.label}: GPV headloss must increase as flow increases"]
     return []
 
