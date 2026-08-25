@@ -23,6 +23,7 @@ import {
   listSchematics,
   loadSchematic as loadStoredSchematic,
   saveSchematic as saveStoredSchematic,
+  SchematicApiError,
 } from "../../lib/builder-storage";
 
 // Elements, types and necessary variables
@@ -63,6 +64,9 @@ type CurvePoint = {
 
 type SchematicModel = {
   id?: string;
+  user_id?: string;
+  created_at?: string;
+  updated_at?: string;
   name: string;
   nodes: BuilderNode[];
   links: BuilderLink[];
@@ -853,46 +857,65 @@ export default function BuilderPage() {
       );
       return;
     }
-    const saved = await saveStoredSchematic(devUserId, toApiPayload(model));
-    setModel(fromApiPayload(saved));
-    setHistory({ past: [], future: [] });
-    setLastSavedSnapshot(JSON.stringify(saved));
-    setStatusMessage(`Saved "${saved.name}" to this browser`);
-    void loadSchematicList();
+    try {
+      const saved = await saveStoredSchematic(devUserId, toApiPayload(model));
+      const savedModel = fromApiPayload(saved);
+      setModel(savedModel);
+      setHistory({ past: [], future: [] });
+      setLastSavedSnapshot(JSON.stringify(toApiPayload(savedModel)));
+      setSelectedSavedSchematicId(saved.id);
+      setStatusMessage(`Saved "${saved.name}" to the backend database`);
+      void loadSchematicList();
+    } catch (error) {
+      setStatusMessage(formatSchematicError(error, "Unable to save schematic"));
+    }
   }
 
   async function loadSchematicList() {
-    const schematics = await listSchematics(devUserId);
-    setSchematicList(schematics);
-    if (
-      selectedSavedSchematicId &&
-      !schematics.some((schematic) => schematic.id === selectedSavedSchematicId)
-    ) {
-      setSelectedSavedSchematicId("");
+    try {
+      const schematics = await listSchematics(devUserId);
+      setSchematicList(schematics);
+      if (
+        selectedSavedSchematicId &&
+        !schematics.some(
+          (schematic) => schematic.id === selectedSavedSchematicId,
+        )
+      ) {
+        setSelectedSavedSchematicId("");
+      }
+      setStatusMessage(
+        schematics.length === 0
+          ? "No saved schematics in the backend database"
+          : `Found ${schematics.length} saved schematic${schematics.length === 1 ? "" : "s"}`,
+      );
+    } catch (error) {
+      setStatusMessage(
+        formatSchematicError(error, "Unable to list backend schematics"),
+      );
     }
-    setStatusMessage(
-      schematics.length === 0
-        ? "No saved schematics in this browser"
-        : `Found ${schematics.length} saved schematic${schematics.length === 1 ? "" : "s"}`,
-    );
   }
 
   async function loadSchematic(schematicId: string) {
     if (!schematicId) return;
-    const loaded = await loadStoredSchematic<SchematicModel>(
-      devUserId,
-      schematicId,
-    );
-    if (!loaded) {
-      setStatusMessage("That saved schematic is no longer available");
-      return;
+    try {
+      const loaded = await loadStoredSchematic<SchematicModel>(
+        devUserId,
+        schematicId,
+      );
+      if (!loaded) {
+        setStatusMessage("That saved schematic is no longer available");
+        return;
+      }
+      const loadedModel = fromApiPayload(loaded);
+      setModel(loadedModel);
+      setSelection([]);
+      setHistory({ past: [], future: [] });
+      setShowAllErrors(false);
+      setLastSavedSnapshot(JSON.stringify(toApiPayload(loadedModel)));
+      setStatusMessage(`Loaded "${loaded.name}" from the backend database`);
+    } catch (error) {
+      setStatusMessage(formatSchematicError(error, "Unable to load schematic"));
     }
-    setModel(fromApiPayload(loaded));
-    setSelection([]);
-    setHistory({ past: [], future: [] });
-    setShowAllErrors(false);
-    setLastSavedSnapshot(JSON.stringify(toApiPayload(fromApiPayload(loaded))));
-    setStatusMessage(`Loaded "${loaded.name}"`);
   }
 
   async function deleteSchematic() {
@@ -902,21 +925,28 @@ export default function BuilderPage() {
 
   async function confirmDeleteSchematic() {
     if (!pendingSavedDelete) return;
-    const deleted = await deleteStoredSchematic(devUserId, pendingSavedDelete);
-    if (!deleted) {
-      setStatusMessage("That saved schematic was already deleted");
+    try {
+      const deleted = await deleteStoredSchematic(devUserId, pendingSavedDelete);
+      if (!deleted) {
+        setStatusMessage("That saved schematic was already deleted");
+        setPendingSavedDelete(null);
+        return;
+      }
+      const blank = defaultModel();
+      setModel(blank);
+      setSelection([]);
+      setHistory({ past: [], future: [] });
+      setLastSavedSnapshot(JSON.stringify(toApiPayload(blank)));
+      setSelectedSavedSchematicId("");
       setPendingSavedDelete(null);
-      return;
+      setStatusMessage("Saved schematic deleted from the backend database");
+      void loadSchematicList();
+    } catch (error) {
+      setStatusMessage(
+        formatSchematicError(error, "Unable to delete schematic"),
+      );
+      setPendingSavedDelete(null);
     }
-    const blank = defaultModel();
-    setModel(blank);
-    setSelection([]);
-    setHistory({ past: [], future: [] });
-    setLastSavedSnapshot(JSON.stringify(toApiPayload(blank)));
-    setSelectedSavedSchematicId("");
-    setPendingSavedDelete(null);
-    setStatusMessage("Saved schematic deleted from this browser");
-    void loadSchematicList();
   }
 
   function exportJson() {
@@ -2402,6 +2432,19 @@ function fromApiPayload(
     links: payload.links ?? [],
     measurements: payload.measurements ?? [],
   };
+}
+
+function formatSchematicError(error: unknown, fallback: string) {
+  if (error instanceof SchematicApiError) {
+    return `${fallback}: ${error.message}`;
+  }
+  if (error instanceof TypeError) {
+    return `${fallback}: backend API is unreachable`;
+  }
+  if (error instanceof Error && error.message) {
+    return `${fallback}: ${error.message}`;
+  }
+  return fallback;
 }
 
 function normalizeParams(params: InputParams): InputParams {

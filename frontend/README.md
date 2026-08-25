@@ -58,12 +58,19 @@ npm run build
 
 ## API
 
-When backend calls are implemented, read the backend base URL from:
+The builder persists schematics through the backend API. Client modules call same-origin
+paths such as `/api/v1/schematics`; `next.config.ts` rewrites those requests to the
+configured FastAPI backend.
+
+Set the backend base URL with:
 
 ```env
 NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 ```
 
-Production should point this to the Render backend. Do not hardcode localhost in components or client data modules.
+`BACKEND_API_BASE_URL` can also be used for server-side deployment config. Production
+should point one of these values to the Render backend. Do not hardcode localhost in
+components or client data modules.
 
-All non-auth API calls require bearer-token authorization per the SRS.
+Until Feature 4 authentication is implemented, schematic API calls send `X-User-Id`.
+The current builder uses `dev-user` by default and lets you edit that value in the UI.
