@@ -50,14 +50,12 @@ audrolics/
 ├── backend/                  # FastAPI backend service
 │   ├── src/backend/
 │   │   ├── api/              # API routers and route controllers
-│   │   ├── core/             # Cross-cutting app configuration/security helpers
-│   │   ├── engine/           # Hydraulic calculation and anomaly modules
-│   │   ├── models/           # Database models
-│   │   ├── repositories/     # Persistence access layer
-│   │   ├── schemas/          # Request/response schemas
-│   │   ├── services/         # Application workflow services
-│   │   ├── config.py         # Runtime configuration
-│   │   ├── database.py       # Database client setup
+│   │   ├── engine/           # Solver-facing input models and future calculation modules
+│   │   ├── repositories/     # Persistence layer; MongoDB or in-memory fallback
+│   │   ├── schemas/          # Pydantic request/response schemas and validation
+│   │   ├── services/         # Currently empty placeholder for future workflows
+│   │   ├── config.py         # Reserved runtime configuration module
+│   │   ├── database.py       # Loads env and chooses MongoDB vs in-memory repository
 │   │   └── main.py           # FastAPI app entrypoint
 │   ├── pyproject.toml
 │   ├── requirements.txt
@@ -72,6 +70,8 @@ audrolics/
 ├── documents/                # SRS and project documentation
 └── notebook/                 # Experiments and scratch analysis
 ```
+
+`builder-storage.ts` is now a frontend API client, despite the old name. It no longer stores the main schematic library in browser `localStorage`; `localStorage` is only used for recovery drafts.
 
 ## Planned Core Workflows
 
@@ -257,10 +257,29 @@ Anomaly tests must cover known leak localization, blockage localization, insuffi
 cd backend
 uv sync
 cp sample.env .env
-uv run fastapi dev src/backend/main.py
+uv run uvicorn backend.main:app --reload --env-file .env
 ```
 
 The API should be available at `http://localhost:8000`. FastAPI documentation should be available at `http://localhost:8000/docs`.
+
+For MongoDB persistence, `backend/.env` must include a real `MONGODB_URI`:
+
+```env
+MONGODB_USERNAME=your_username
+MONGODB_PASSWORD=your_password
+MONGODB_URI=mongodb+srv://your_username:your_password@your-cluster.mongodb.net/
+```
+
+`MONGODB_USERNAME` and `MONGODB_PASSWORD` are only helper values for humans. The backend reads `MONGODB_URI` directly. If `MONGODB_URI` is missing or left as `{URI}`, the backend saves schematics in memory and they disappear when the backend restarts.
+
+The optional `MONGODB_DATABASE` env var can override the database name. If omitted, the backend uses:
+
+```text
+database: audrolics
+collection: schematics
+```
+
+The backend also defensively loads `.env` from `backend/.env` or the project root `.env` before choosing the repository, but using `--env-file .env` keeps startup explicit.
 
 ### Frontend
 
@@ -271,6 +290,10 @@ npm run dev
 ```
 
 The frontend should be available at `http://localhost:3000`.
+
+The builder calls same-origin paths such as `/api/v1/schematics`. `frontend/next.config.ts` rewrites `/api/*` to the backend server, defaulting to `http://localhost:8000`. Keep the backend running while saving, listing, loading, or deleting schematics from the builder.
+
+After the first save, clicking Save again updates the current schematic with `PUT`. To create another separate schematic, click **New** first, then build and save the new diagram.
 
 Run linting with:
 

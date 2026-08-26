@@ -908,37 +908,8 @@ export default function BuilderPage() {
       setLastSavedSnapshot(JSON.stringify(toApiPayload(savedModel)));
       setSelectedSavedSchematicId(saved.id);
       setStatusMessage(`Saved "${saved.name}" to the backend database`);
-      void loadSchematicList();
     } catch (error) {
       setStatusMessage(formatSchematicError(error, "Unable to save schematic"));
-    }
-  }
-
-  async function loadSchematicList(options: { quiet?: boolean } = {}) {
-    try {
-      const schematics = await listSchematics(devUserId);
-      setSchematicList(schematics);
-      if (
-        selectedSavedSchematicId &&
-        !schematics.some(
-          (schematic) => schematic.id === selectedSavedSchematicId,
-        )
-      ) {
-        setSelectedSavedSchematicId("");
-      }
-      if (!options.quiet) {
-        setStatusMessage(
-          schematics.length === 0
-            ? "No saved schematics in the backend database"
-            : `Found ${schematics.length} saved schematic${schematics.length === 1 ? "" : "s"}`,
-        );
-      }
-    } catch (error) {
-      if (!options.quiet) {
-        setStatusMessage(
-          formatSchematicError(error, "Unable to list backend schematics"),
-        );
-      }
     }
   }
 
@@ -999,7 +970,6 @@ export default function BuilderPage() {
       setSelectedSavedSchematicId("");
       setPendingSavedDelete(null);
       setStatusMessage("Saved schematic deleted from the backend database");
-      void loadSchematicList();
     } catch (error) {
       setStatusMessage(
         formatSchematicError(error, "Unable to delete schematic"),
@@ -1273,7 +1243,6 @@ export default function BuilderPage() {
             onChange={(event) => setDevUserId(event.target.value)}
             className="h-8 w-24 rounded border border-slate-300 px-2 text-xs"
           />
-          <ToolbarButton label="List" onClick={() => loadSchematicList()} />
           <ToolbarButton label="New" onClick={startNewSchematic} />
           <ToolbarButton label="Save" onClick={saveSchematic} />
           <ToolbarButton
