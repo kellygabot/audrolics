@@ -75,9 +75,9 @@ class TankInputParams(StrictParams):
 class PipeInputParams(StrictParams):
     length: float
     diameter: float
-    roughness: float
-    minor_loss_coeff: float
-    status: str
+    roughness: float = 140
+    minor_loss_coeff: float = 0
+    status: str = "OPEN"
 
 
 class CurvePoint(BaseModel):

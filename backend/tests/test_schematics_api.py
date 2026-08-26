@@ -110,6 +110,45 @@ def test_element_payloads_get_srs_computed_defaults() -> None:
     }
 
 
+def test_pipe_input_params_get_hydraulic_defaults() -> None:
+    client = client_with_repo()
+    payload = valid_payload()
+    payload["nodes"].append(
+        {
+            "id": "node-2",
+            "label": "R-1",
+            "type": "RESERVOIR",
+            "x": 100,
+            "y": 20,
+            "input_params": {"total_head": 20},
+        }
+    )
+    payload["links"].append(
+        {
+            "id": "link-1",
+            "label": "P-1",
+            "type": "PIPE",
+            "from_node_id": "node-2",
+            "to_node_id": "node-1",
+            "input_params": {
+                "length": 100,
+                "diameter": 150,
+            },
+        }
+    )
+
+    response = client.post("/api/v1/schematics", json=payload, headers={"X-User-Id": "alpha"})
+
+    assert response.status_code == 201
+    assert response.json()["links"][0]["input_params"] == {
+        "length": 100,
+        "diameter": 150,
+        "roughness": 140,
+        "minor_loss_coeff": 0,
+        "status": "OPEN",
+    }
+
+
 def test_wrong_element_input_params_are_rejected() -> None:
     client = client_with_repo()
     payload = valid_payload()
