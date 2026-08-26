@@ -6,6 +6,7 @@ import {
   type KeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -268,6 +269,16 @@ export default function BuilderPage() {
         ? "cursor-grab"
         : "cursor-crosshair";
 
+  const nudgeZoom = useCallback((delta: number) => {
+    setModel((current) => ({
+      ...current,
+      canvas_state: {
+        ...current.canvas_state,
+        zoom: clamp(current.canvas_state.zoom + delta, MIN_ZOOM, MAX_ZOOM),
+      },
+    }));
+  }, []);
+
   useEffect(() => {
     // Keep the first client render identical to SSR, then offer recovery.
     const timeout = window.setTimeout(() => {
@@ -276,6 +287,31 @@ export default function BuilderPage() {
     }, 0);
     return () => window.clearTimeout(timeout);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function fetchSavedSchematics() {
+      try {
+        const schematics = await listSchematics(devUserId);
+        if (cancelled) return;
+        setSchematicList(schematics);
+        if (
+          selectedSavedSchematicId &&
+          !schematics.some(
+            (schematic) => schematic.id === selectedSavedSchematicId,
+          )
+        ) {
+          setSelectedSavedSchematicId("");
+        }
+      } catch {
+        if (!cancelled) setSchematicList([]);
+      }
+    }
+    void fetchSavedSchematics();
+    return () => {
+      cancelled = true;
+    };
+  }, [devUserId, selectedSavedSchematicId]);
 
   useEffect(() => {
     // Autosave-lite from the SRS: local recovery only, separate from explicit Mongo save.
@@ -308,6 +344,17 @@ export default function BuilderPage() {
       window.removeEventListener("pointerup", onUp);
     };
   }, [isResizingPanel]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      nudgeZoom(event.deltaY > 0 ? -ZOOM_STEP : ZOOM_STEP);
+    };
+    canvas.addEventListener("wheel", onWheel, { passive: false });
+    return () => canvas.removeEventListener("wheel", onWheel);
+  }, [nudgeZoom]);
 
   function commit(
     update: (draft: SchematicModel) => SchematicModel,
@@ -364,10 +411,6 @@ export default function BuilderPage() {
 
   function updateZoom(nextZoom: number) {
     setViewport({ zoom: clamp(nextZoom, MIN_ZOOM, MAX_ZOOM) });
-  }
-
-  function nudgeZoom(delta: number) {
-    updateZoom(model.canvas_state.zoom + delta);
   }
 
   function fitDiagramToView() {
@@ -871,7 +914,7 @@ export default function BuilderPage() {
     }
   }
 
-  async function loadSchematicList() {
+  async function loadSchematicList(options: { quiet?: boolean } = {}) {
     try {
       const schematics = await listSchematics(devUserId);
       setSchematicList(schematics);
@@ -883,15 +926,19 @@ export default function BuilderPage() {
       ) {
         setSelectedSavedSchematicId("");
       }
-      setStatusMessage(
-        schematics.length === 0
-          ? "No saved schematics in the backend database"
-          : `Found ${schematics.length} saved schematic${schematics.length === 1 ? "" : "s"}`,
-      );
+      if (!options.quiet) {
+        setStatusMessage(
+          schematics.length === 0
+            ? "No saved schematics in the backend database"
+            : `Found ${schematics.length} saved schematic${schematics.length === 1 ? "" : "s"}`,
+        );
+      }
     } catch (error) {
-      setStatusMessage(
-        formatSchematicError(error, "Unable to list backend schematics"),
-      );
+      if (!options.quiet) {
+        setStatusMessage(
+          formatSchematicError(error, "Unable to list backend schematics"),
+        );
+      }
     }
   }
 
@@ -916,6 +963,18 @@ export default function BuilderPage() {
     } catch (error) {
       setStatusMessage(formatSchematicError(error, "Unable to load schematic"));
     }
+  }
+
+  function startNewSchematic() {
+    const blank = defaultModel();
+    setModel(blank);
+    setSelection([]);
+    setHistory({ past: [], future: [] });
+    setTouched(new Set());
+    setShowAllErrors(false);
+    setSelectedSavedSchematicId("");
+    setLastSavedSnapshot(JSON.stringify(toApiPayload(blank)));
+    setStatusMessage("Started a new unsaved schematic");
   }
 
   async function deleteSchematic() {
@@ -1214,7 +1273,8 @@ export default function BuilderPage() {
             onChange={(event) => setDevUserId(event.target.value)}
             className="h-8 w-24 rounded border border-slate-300 px-2 text-xs"
           />
-          <ToolbarButton label="List" onClick={loadSchematicList} />
+          <ToolbarButton label="List" onClick={() => loadSchematicList()} />
+          <ToolbarButton label="New" onClick={startNewSchematic} />
           <ToolbarButton label="Save" onClick={saveSchematic} />
           <ToolbarButton
             label="Delete"
@@ -1345,10 +1405,6 @@ export default function BuilderPage() {
             role="application"
             tabIndex={0}
             aria-label="Schematic builder canvas"
-            onWheel={(event) => {
-              event.preventDefault();
-              nudgeZoom(event.deltaY > 0 ? -ZOOM_STEP : ZOOM_STEP);
-            }}
             onDrop={(event) => {
               event.preventDefault();
               const tool = event.dataTransfer.getData(
