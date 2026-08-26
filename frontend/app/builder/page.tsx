@@ -1,5 +1,7 @@
+
 "use client";
 
+// Imports
 import {
   type KeyboardEvent,
   type MouseEvent as ReactMouseEvent,
@@ -15,11 +17,13 @@ import {
   validateFieldValue,
   validateTankLevels,
 } from "../../lib/builder-rules";
+
 import {
   deleteSchematic as deleteStoredSchematic,
   listSchematics,
   loadSchematic as loadStoredSchematic,
   saveSchematic as saveStoredSchematic,
+  SchematicApiError,
 } from "../../lib/builder-storage";
 
 // Elements, types and necessary variables
@@ -60,6 +64,9 @@ type CurvePoint = {
 
 type SchematicModel = {
   id?: string;
+  user_id?: string;
+  created_at?: string;
+  updated_at?: string;
   name: string;
   nodes: BuilderNode[];
   links: BuilderLink[];
@@ -71,9 +78,19 @@ type SchematicModel = {
     threshold_flow_pct: number;
     threshold_flow_abs: number;
   };
-  filter_multipliers: { clean: number; partially_clogged: number; clogged: number };
+  filter_multipliers: {
+    clean: number;
+    partially_clogged: number;
+    clogged: number;
+  };
   styling: { line_color: string; line_thickness: number; symbol_size: number };
-  visibility: { length: boolean; diameter: boolean; pressure: boolean; flow: boolean; elevation: boolean };
+  visibility: {
+    length: boolean;
+    diameter: boolean;
+    pressure: boolean;
+    flow: boolean;
+    elevation: boolean;
+  };
 };
 
 // Undo/redo stores whole schematic snapshots because Feature 1 edits are small,
@@ -92,7 +109,14 @@ type PanState = {
 };
 
 type DragState =
-  | { kind: "node"; id: string; pointerId: number; offsetX: number; offsetY: number; moved: boolean }
+  | {
+      kind: "node";
+      id: string;
+      pointerId: number;
+      offsetX: number;
+      offsetY: number;
+      moved: boolean;
+    }
   | { kind: "select"; pointerId: number; start: Point; current: Point };
 
 type Point = { x: number; y: number };
@@ -105,17 +129,37 @@ const SNAP_PX = 10;
 const HISTORY_LIMIT = 60;
 const RECOVERY_KEY = "audrolics.builder.recovery";
 
-const nodeTools: { type: NodeType; label: string; code: string; detail: string }[] = [
+const nodeTools: {
+  type: NodeType;
+  label: string;
+  code: string;
+  detail: string;
+}[] = [
   { type: "JUNCTION", label: "Junction", code: "J", detail: "Small circle" },
-  { type: "RESERVOIR", label: "Reservoir", code: "R", detail: "Hatched triangle" },
+  {
+    type: "RESERVOIR",
+    label: "Reservoir",
+    code: "R",
+    detail: "Hatched triangle",
+  },
   { type: "TANK", label: "Tank", code: "T", detail: "Rectangle / cylinder" },
 ];
 
-const linkTools: { type: LinkType; label: string; code: string; detail: string }[] = [
+const linkTools: {
+  type: LinkType;
+  label: string;
+  code: string;
+  detail: string;
+}[] = [
   { type: "PIPE", label: "Pipe", code: "P", detail: "Straight line" },
   { type: "PUMP", label: "Pump", code: "PU", detail: "Pump symbol" },
   { type: "VALVE", label: "Valve", code: "V", detail: "Typed valve" },
-  { type: "FILTER", label: "Strainer / Filter", code: "F", detail: "Dashed diamond" },
+  {
+    type: "FILTER",
+    label: "Strainer / Filter",
+    code: "F",
+    detail: "Dashed diamond",
+  },
 ];
 
 const defaultModel = (): SchematicModel => ({
@@ -132,7 +176,13 @@ const defaultModel = (): SchematicModel => ({
   },
   filter_multipliers: { clean: 1, partially_clogged: 3, clogged: 10 },
   styling: { line_color: "#0f766e", line_thickness: 2, symbol_size: 1 },
-  visibility: { length: true, diameter: true, pressure: true, flow: true, elevation: true },
+  visibility: {
+    length: true,
+    diameter: true,
+    pressure: true,
+    flow: true,
+    elevation: true,
+  },
 });
 
 const readRecoveryModel = (): SchematicModel | null => {
@@ -154,47 +204,69 @@ const isNodeTool = (tool: ToolType | null): tool is NodeType =>
 const isLinkTool = (tool: ToolType | null): tool is LinkType =>
   tool === "PIPE" || tool === "PUMP" || tool === "VALVE" || tool === "FILTER";
 
-const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+const clamp = (value: number, min: number, max: number) =>
+  Math.min(Math.max(value, min), max);
 const id = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
 
 export default function BuilderPage() {
   const [model, setModel] = useState(defaultModel);
-  const [history, setHistory] = useState<HistoryState>({ past: [], future: [] });
+  const [history, setHistory] = useState<HistoryState>({
+    past: [],
+    future: [],
+  });
   const [selection, setSelection] = useState<Selection[]>([]);
   const [activeTool, setActiveTool] = useState<ToolType | null>(null);
-  const [pendingLink, setPendingLink] = useState<{ type: LinkType; fromNodeId: string; cursor: Point } | null>(null);
+  const [pendingLink, setPendingLink] = useState<{
+    type: LinkType;
+    fromNodeId: string;
+    cursor: Point;
+  } | null>(null);
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [panState, setPanState] = useState<PanState | null>(null);
   const [isSpacePressed, setIsSpacePressed] = useState(false);
   const [touched, setTouched] = useState<Set<string>>(new Set());
   const [showAllErrors, setShowAllErrors] = useState(false);
   const [devUserId, setDevUserId] = useState("dev-user");
-  const [schematicList, setSchematicList] = useState<{ id: string; name: string; updated_at: string }[]>([]);
+  const [schematicList, setSchematicList] = useState<
+    { id: string; name: string; updated_at: string }[]
+  >([]);
   const [selectedSavedSchematicId, setSelectedSavedSchematicId] = useState("");
   const [statusMessage, setStatusMessage] = useState("Ready to build");
   const [rightPanelWidth, setRightPanelWidth] = useState(340);
   const [isResizingPanel, setIsResizingPanel] = useState(false);
-  const [recoveryCandidate, setRecoveryCandidate] = useState<SchematicModel | null>(null);
-  const [lastSavedSnapshot, setLastSavedSnapshot] = useState(() => JSON.stringify(toApiPayload(defaultModel())));
+  const [recoveryCandidate, setRecoveryCandidate] =
+    useState<SchematicModel | null>(null);
+  const [lastSavedSnapshot, setLastSavedSnapshot] = useState(() =>
+    JSON.stringify(toApiPayload(defaultModel())),
+  );
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
-  const [pendingSavedDelete, setPendingSavedDelete] = useState<string | null>(null);
+  const [pendingSavedDelete, setPendingSavedDelete] = useState<string | null>(
+    null,
+  );
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   // Node dragging updates live without pushing every pointer move into history.
   // The starting snapshot is committed once on pointer-up.
   const dragStartModelRef = useRef<SchematicModel | null>(null);
 
-  const selectedNode = selection.length === 1 && selection[0].kind === "node"
-    ? model.nodes.find((node) => node.id === selection[0].id)
-    : undefined;
-  const selectedLink = selection.length === 1 && selection[0].kind === "link"
-    ? model.links.find((link) => link.id === selection[0].id)
-    : undefined;
+  const selectedNode =
+    selection.length === 1 && selection[0].kind === "node"
+      ? model.nodes.find((node) => node.id === selection[0].id)
+      : undefined;
+  const selectedLink =
+    selection.length === 1 && selection[0].kind === "link"
+      ? model.links.find((link) => link.id === selection[0].id)
+      : undefined;
   const validation = useMemo(() => validateModel(model), [model]);
   const zoomFactor = model.canvas_state.zoom / 100;
   const transform = `translate(${model.canvas_state.pan.x} ${model.canvas_state.pan.y}) scale(${zoomFactor})`;
   const isPanning = panState !== null;
-  const cursorClass = isPanning || isResizingPanel ? "cursor-grabbing" : isSpacePressed ? "cursor-grab" : "cursor-crosshair";
+  const cursorClass =
+    isPanning || isResizingPanel
+      ? "cursor-grabbing"
+      : isSpacePressed
+        ? "cursor-grab"
+        : "cursor-crosshair";
 
   useEffect(() => {
     // Keep the first client render identical to SSR, then offer recovery.
@@ -237,7 +309,10 @@ export default function BuilderPage() {
     };
   }, [isResizingPanel]);
 
-  function commit(update: (draft: SchematicModel) => SchematicModel, message?: string) {
+  function commit(
+    update: (draft: SchematicModel) => SchematicModel,
+    message?: string,
+  ) {
     // Use this for diagram edits that should be undoable.
     // Viewport and panel-only UI state intentionally bypass it.
     setModel((current) => {
@@ -256,7 +331,10 @@ export default function BuilderPage() {
       const previous = state.past.at(-1);
       if (!previous) return state;
       setModel(previous);
-      return { past: state.past.slice(0, -1), future: [model, ...state.future] };
+      return {
+        past: state.past.slice(0, -1),
+        future: [model, ...state.future],
+      };
     });
   }
 
@@ -265,7 +343,10 @@ export default function BuilderPage() {
       const next = state.future[0];
       if (!next) return state;
       setModel(next);
-      return { past: [...state.past, model].slice(-HISTORY_LIMIT), future: state.future.slice(1) };
+      return {
+        past: [...state.past, model].slice(-HISTORY_LIMIT),
+        future: state.future.slice(1),
+      };
     });
   }
 
@@ -296,7 +377,11 @@ export default function BuilderPage() {
       height: rect?.height ?? 0,
     });
     setViewport(nextCanvasState);
-    setStatusMessage(model.nodes.length === 0 ? "Canvas reset to 100%" : "Diagram fitted to view");
+    setStatusMessage(
+      model.nodes.length === 0
+        ? "Canvas reset to 100%"
+        : "Diagram fitted to view",
+    );
   }
 
   function restoreRecoveryDraft() {
@@ -349,7 +434,10 @@ export default function BuilderPage() {
       input_params: defaultNodeParams(type),
       computed: defaultNodeComputed(type),
     };
-    commit((draft) => ({ ...draft, nodes: [...draft.nodes, node] }), `${node.label} placed`);
+    commit(
+      (draft) => ({ ...draft, nodes: [...draft.nodes, node] }),
+      `${node.label} placed`,
+    );
     setSelection([{ kind: "node", id: node.id }]);
     setActiveTool(null);
   }
@@ -377,7 +465,10 @@ export default function BuilderPage() {
       input_params: defaultLinkParams(type),
       computed: defaultLinkComputed(type),
     };
-    commit((draft) => ({ ...draft, links: [...draft.links, link] }), `${link.label} connected`);
+    commit(
+      (draft) => ({ ...draft, links: [...draft.links, link] }),
+      `${link.label} connected`,
+    );
     setSelection([{ kind: "link", id: link.id }]);
     setPendingLink(null);
     setActiveTool(null);
@@ -387,7 +478,11 @@ export default function BuilderPage() {
     // Canvas pointer ownership is split by mode: pan, node placement, or drag-box
     // selection. Element-specific handlers stop propagation before this runs.
     setContextMenu(null);
-    if (event.target !== event.currentTarget && (event.target as Element).closest("[data-element-id]")) return;
+    if (
+      event.target !== event.currentTarget &&
+      (event.target as Element).closest("[data-element-id]")
+    )
+      return;
     const world = screenToWorld(event.clientX, event.clientY);
     if (event.button === 1 || (event.button === 0 && isSpacePressed)) {
       event.preventDefault();
@@ -408,7 +503,12 @@ export default function BuilderPage() {
     if (event.button === 0) {
       event.currentTarget.setPointerCapture(event.pointerId);
       setSelection([]);
-      setDragState({ kind: "select", pointerId: event.pointerId, start: world, current: world });
+      setDragState({
+        kind: "select",
+        pointerId: event.pointerId,
+        start: world,
+        current: world,
+      });
     }
   }
 
@@ -431,9 +531,19 @@ export default function BuilderPage() {
     }
     setModel((current) => {
       const movedNodes = current.nodes.map((node) =>
-        node.id === dragState.id ? { ...node, x: world.x - dragState.offsetX, y: world.y - dragState.offsetY } : node,
+        node.id === dragState.id
+          ? {
+              ...node,
+              x: world.x - dragState.offsetX,
+              y: world.y - dragState.offsetY,
+            }
+          : node,
       );
-      return { ...current, nodes: movedNodes, links: updateLinkPointsForNodes(current.links, movedNodes) };
+      return {
+        ...current,
+        nodes: movedNodes,
+        links: updateLinkPointsForNodes(current.links, movedNodes),
+      };
     });
     setDragState({ ...dragState, moved: true });
   }
@@ -445,7 +555,11 @@ export default function BuilderPage() {
       setPanState(null);
     }
     if (dragState?.pointerId === event.pointerId) {
-      if (dragState.kind === "node" && dragState.moved && dragStartModelRef.current) {
+      if (
+        dragState.kind === "node" &&
+        dragState.moved &&
+        dragStartModelRef.current
+      ) {
         const dragStart = dragStartModelRef.current;
         setHistory((state) => ({
           past: [...state.past.slice(-(HISTORY_LIMIT - 1)), dragStart],
@@ -455,7 +569,13 @@ export default function BuilderPage() {
       if (dragState.kind === "select") {
         const box = normalizeBox(dragState.start, dragState.current);
         const selectedNodes = model.nodes
-          .filter((node) => node.x >= box.x && node.x <= box.x + box.width && node.y >= box.y && node.y <= box.y + box.height)
+          .filter(
+            (node) =>
+              node.x >= box.x &&
+              node.x <= box.x + box.width &&
+              node.y >= box.y &&
+              node.y <= box.y + box.height,
+          )
           .map((node) => ({ kind: "node" as const, id: node.id }));
         setSelection(selectedNodes);
       }
@@ -465,11 +585,15 @@ export default function BuilderPage() {
     }
     if (pendingLink) {
       const target = nearestNode(world, pendingLink.fromNodeId);
-      if (target) createLink(pendingLink.type, pendingLink.fromNodeId, target.id);
+      if (target)
+        createLink(pendingLink.type, pendingLink.fromNodeId, target.id);
     }
   }
 
-  function handleNodePointerDown(event: ReactPointerEvent<SVGGElement>, node: BuilderNode) {
+  function handleNodePointerDown(
+    event: ReactPointerEvent<SVGGElement>,
+    node: BuilderNode,
+  ) {
     event.stopPropagation();
     setContextMenu(null);
     const world = screenToWorld(event.clientX, event.clientY);
@@ -478,7 +602,9 @@ export default function BuilderPage() {
       return;
     }
     if (event.shiftKey) {
-      setSelection((current) => toggleSelection(current, { kind: "node", id: node.id }));
+      setSelection((current) =>
+        toggleSelection(current, { kind: "node", id: node.id }),
+      );
     } else {
       setSelection([{ kind: "node", id: node.id }]);
     }
@@ -494,16 +620,26 @@ export default function BuilderPage() {
     dragStartModelRef.current = structuredClone(model);
   }
 
-  function handleNodeClick(event: ReactPointerEvent<SVGGElement>, node: BuilderNode) {
+  function handleNodeClick(
+    event: ReactPointerEvent<SVGGElement>,
+    node: BuilderNode,
+  ) {
     if (!pendingLink || event.button !== 0) return;
     event.stopPropagation();
     createLink(pendingLink.type, pendingLink.fromNodeId, node.id);
   }
 
-  function handleLinkPointerDown(event: ReactPointerEvent<SVGGElement>, link: BuilderLink) {
+  function handleLinkPointerDown(
+    event: ReactPointerEvent<SVGGElement>,
+    link: BuilderLink,
+  ) {
     event.stopPropagation();
     setContextMenu(null);
-    setSelection(event.shiftKey ? toggleSelection(selection, { kind: "link", id: link.id }) : [{ kind: "link", id: link.id }]);
+    setSelection(
+      event.shiftKey
+        ? toggleSelection(selection, { kind: "link", id: link.id })
+        : [{ kind: "link", id: link.id }],
+    );
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
@@ -554,31 +690,60 @@ export default function BuilderPage() {
 
   function copySelection() {
     if (selection.length === 0) return;
-    const selectedNodeIds = new Set(selection.filter((item) => item.kind === "node").map((item) => item.id));
-    const selectedLinkIds = new Set(selection.filter((item) => item.kind === "link").map((item) => item.id));
+    const selectedNodeIds = new Set(
+      selection.filter((item) => item.kind === "node").map((item) => item.id),
+    );
+    const selectedLinkIds = new Set(
+      selection.filter((item) => item.kind === "link").map((item) => item.id),
+    );
     const nodes = model.nodes.filter((node) => selectedNodeIds.has(node.id));
     // Include internal links when both endpoint nodes are copied, so pasted
     // subnetworks preserve their connectivity.
     const links = model.links.filter(
-      (link) => selectedLinkIds.has(link.id) || (link.from_node_id && link.to_node_id && selectedNodeIds.has(link.from_node_id) && selectedNodeIds.has(link.to_node_id)),
+      (link) =>
+        selectedLinkIds.has(link.id) ||
+        (link.from_node_id &&
+          link.to_node_id &&
+          selectedNodeIds.has(link.from_node_id) &&
+          selectedNodeIds.has(link.to_node_id)),
     );
-    navigator.clipboard?.writeText(JSON.stringify({ nodes, links })).catch(() => undefined);
-    sessionStorage.setItem("audrolics.builder.clipboard", JSON.stringify({ nodes, links }));
+    navigator.clipboard
+      ?.writeText(JSON.stringify({ nodes, links }))
+      .catch(() => undefined);
+    sessionStorage.setItem(
+      "audrolics.builder.clipboard",
+      JSON.stringify({ nodes, links }),
+    );
     setStatusMessage("Selection copied");
   }
 
   function pasteSelection() {
     const raw = sessionStorage.getItem("audrolics.builder.clipboard");
     if (!raw) return;
-    const parsed = JSON.parse(raw) as { nodes: BuilderNode[]; links: BuilderLink[] };
+    const parsed = JSON.parse(raw) as {
+      nodes: BuilderNode[];
+      links: BuilderLink[];
+    };
     const nodeIdMap = new Map<string, string>();
     const pastedNodes = parsed.nodes.map((node) => {
       const newId = id("node");
       nodeIdMap.set(node.id, newId);
-      return { ...structuredClone(node), id: newId, label: nextLabel(node.type, model), x: node.x + 32, y: node.y + 32 };
+      return {
+        ...structuredClone(node),
+        id: newId,
+        label: nextLabel(node.type, model),
+        x: node.x + 32,
+        y: node.y + 32,
+      };
     });
     const pastedLinks = parsed.links
-      .filter((link) => link.from_node_id && link.to_node_id && nodeIdMap.has(link.from_node_id) && nodeIdMap.has(link.to_node_id))
+      .filter(
+        (link) =>
+          link.from_node_id &&
+          link.to_node_id &&
+          nodeIdMap.has(link.from_node_id) &&
+          nodeIdMap.has(link.to_node_id),
+      )
       .map((link) => ({
         ...structuredClone(link),
         id: id("link"),
@@ -586,7 +751,14 @@ export default function BuilderPage() {
         from_node_id: nodeIdMap.get(link.from_node_id!)!,
         to_node_id: nodeIdMap.get(link.to_node_id!)!,
       }));
-    commit((draft) => ({ ...draft, nodes: [...draft.nodes, ...pastedNodes], links: [...draft.links, ...pastedLinks] }), "Selection pasted");
+    commit(
+      (draft) => ({
+        ...draft,
+        nodes: [...draft.nodes, ...pastedNodes],
+        links: [...draft.links, ...pastedLinks],
+      }),
+      "Selection pasted",
+    );
     setSelection(pastedNodes.map((node) => ({ kind: "node", id: node.id })));
   }
 
@@ -597,20 +769,32 @@ export default function BuilderPage() {
 
   function deleteItems(items: Selection[]) {
     if (items.length === 0) return;
-    const nodeIds = new Set(items.filter((item) => item.kind === "node").map((item) => item.id));
-    const linkIds = new Set(items.filter((item) => item.kind === "link").map((item) => item.id));
+    const nodeIds = new Set(
+      items.filter((item) => item.kind === "node").map((item) => item.id),
+    );
+    const linkIds = new Set(
+      items.filter((item) => item.kind === "link").map((item) => item.id),
+    );
     commit(
       (draft) => ({
         ...draft,
         nodes: draft.nodes.filter((node) => !nodeIds.has(node.id)),
-        links: draft.links.filter((link) => !linkIds.has(link.id) && !nodeIds.has(link.from_node_id ?? "") && !nodeIds.has(link.to_node_id ?? "")),
+        links: draft.links.filter(
+          (link) =>
+            !linkIds.has(link.id) &&
+            !nodeIds.has(link.from_node_id ?? "") &&
+            !nodeIds.has(link.to_node_id ?? ""),
+        ),
       }),
       "Selection deleted",
     );
     setSelection([]);
   }
 
-  function openElementContextMenu(event: ReactMouseEvent<SVGGElement>, item: Selection) {
+  function openElementContextMenu(
+    event: ReactMouseEvent<SVGGElement>,
+    item: Selection,
+  ) {
     event.preventDefault();
     event.stopPropagation();
     setSelection([item]);
@@ -626,23 +810,41 @@ export default function BuilderPage() {
   function updateNodeParam(nodeId: string, key: string, value: FieldValue) {
     commit((draft) => ({
       ...draft,
-      nodes: draft.nodes.map((node) => node.id === nodeId ? { ...node, input_params: { ...node.input_params, [key]: value } } : node),
+      nodes: draft.nodes.map((node) =>
+        node.id === nodeId
+          ? { ...node, input_params: { ...node.input_params, [key]: value } }
+          : node,
+      ),
     }));
   }
 
   function updateLinkParam(linkId: string, key: string, value: FieldValue) {
     commit((draft) => ({
       ...draft,
-      links: draft.links.map((link) => link.id === linkId ? { ...link, input_params: { ...link.input_params, [key]: value } } : link),
+      links: draft.links.map((link) =>
+        link.id === linkId
+          ? { ...link, input_params: { ...link.input_params, [key]: value } }
+          : link,
+      ),
     }));
   }
 
   function renameSelected(value: string) {
     if (selectedNode) {
-      commit((draft) => ({ ...draft, nodes: draft.nodes.map((node) => node.id === selectedNode.id ? { ...node, label: value } : node) }));
+      commit((draft) => ({
+        ...draft,
+        nodes: draft.nodes.map((node) =>
+          node.id === selectedNode.id ? { ...node, label: value } : node,
+        ),
+      }));
     }
     if (selectedLink) {
-      commit((draft) => ({ ...draft, links: draft.links.map((link) => link.id === selectedLink.id ? { ...link, label: value } : link) }));
+      commit((draft) => ({
+        ...draft,
+        links: draft.links.map((link) =>
+          link.id === selectedLink.id ? { ...link, label: value } : link,
+        ),
+      }));
     }
   }
 
@@ -650,39 +852,70 @@ export default function BuilderPage() {
     setShowAllErrors(true);
     const errors = validateModel(model);
     if (Object.keys(errors).length > 0) {
-      setStatusMessage("Fix the highlighted fields before saving this schematic");
+      setStatusMessage(
+        "Fix the highlighted fields before saving this schematic",
+      );
       return;
     }
-    const saved = await saveStoredSchematic(devUserId, toApiPayload(model));
-    setModel(fromApiPayload(saved));
-    setHistory({ past: [], future: [] });
-    setLastSavedSnapshot(JSON.stringify(saved));
-    setStatusMessage(`Saved "${saved.name}" to this browser`);
-    void loadSchematicList();
+    try {
+      const saved = await saveStoredSchematic(devUserId, toApiPayload(model));
+      const savedModel = fromApiPayload(saved);
+      setModel(savedModel);
+      setHistory({ past: [], future: [] });
+      setLastSavedSnapshot(JSON.stringify(toApiPayload(savedModel)));
+      setSelectedSavedSchematicId(saved.id);
+      setStatusMessage(`Saved "${saved.name}" to the backend database`);
+      void loadSchematicList();
+    } catch (error) {
+      setStatusMessage(formatSchematicError(error, "Unable to save schematic"));
+    }
   }
 
   async function loadSchematicList() {
-    const schematics = await listSchematics(devUserId);
-    setSchematicList(schematics);
-    if (selectedSavedSchematicId && !schematics.some((schematic) => schematic.id === selectedSavedSchematicId)) {
-      setSelectedSavedSchematicId("");
+    try {
+      const schematics = await listSchematics(devUserId);
+      setSchematicList(schematics);
+      if (
+        selectedSavedSchematicId &&
+        !schematics.some(
+          (schematic) => schematic.id === selectedSavedSchematicId,
+        )
+      ) {
+        setSelectedSavedSchematicId("");
+      }
+      setStatusMessage(
+        schematics.length === 0
+          ? "No saved schematics in the backend database"
+          : `Found ${schematics.length} saved schematic${schematics.length === 1 ? "" : "s"}`,
+      );
+    } catch (error) {
+      setStatusMessage(
+        formatSchematicError(error, "Unable to list backend schematics"),
+      );
     }
-    setStatusMessage(schematics.length === 0 ? "No saved schematics in this browser" : `Found ${schematics.length} saved schematic${schematics.length === 1 ? "" : "s"}`);
   }
 
   async function loadSchematic(schematicId: string) {
     if (!schematicId) return;
-    const loaded = await loadStoredSchematic<SchematicModel>(devUserId, schematicId);
-    if (!loaded) {
-      setStatusMessage("That saved schematic is no longer available");
-      return;
+    try {
+      const loaded = await loadStoredSchematic<SchematicModel>(
+        devUserId,
+        schematicId,
+      );
+      if (!loaded) {
+        setStatusMessage("That saved schematic is no longer available");
+        return;
+      }
+      const loadedModel = fromApiPayload(loaded);
+      setModel(loadedModel);
+      setSelection([]);
+      setHistory({ past: [], future: [] });
+      setShowAllErrors(false);
+      setLastSavedSnapshot(JSON.stringify(toApiPayload(loadedModel)));
+      setStatusMessage(`Loaded "${loaded.name}" from the backend database`);
+    } catch (error) {
+      setStatusMessage(formatSchematicError(error, "Unable to load schematic"));
     }
-    setModel(fromApiPayload(loaded));
-    setSelection([]);
-    setHistory({ past: [], future: [] });
-    setShowAllErrors(false);
-    setLastSavedSnapshot(JSON.stringify(toApiPayload(fromApiPayload(loaded))));
-    setStatusMessage(`Loaded "${loaded.name}"`);
   }
 
   async function deleteSchematic() {
@@ -692,35 +925,86 @@ export default function BuilderPage() {
 
   async function confirmDeleteSchematic() {
     if (!pendingSavedDelete) return;
-    const deleted = await deleteStoredSchematic(devUserId, pendingSavedDelete);
-    if (!deleted) {
-      setStatusMessage("That saved schematic was already deleted");
+    try {
+      const deleted = await deleteStoredSchematic(devUserId, pendingSavedDelete);
+      if (!deleted) {
+        setStatusMessage("That saved schematic was already deleted");
+        setPendingSavedDelete(null);
+        return;
+      }
+      const blank = defaultModel();
+      setModel(blank);
+      setSelection([]);
+      setHistory({ past: [], future: [] });
+      setLastSavedSnapshot(JSON.stringify(toApiPayload(blank)));
+      setSelectedSavedSchematicId("");
       setPendingSavedDelete(null);
-      return;
+      setStatusMessage("Saved schematic deleted from the backend database");
+      void loadSchematicList();
+    } catch (error) {
+      setStatusMessage(
+        formatSchematicError(error, "Unable to delete schematic"),
+      );
+      setPendingSavedDelete(null);
     }
-    const blank = defaultModel();
-    setModel(blank);
-    setSelection([]);
-    setHistory({ past: [], future: [] });
-    setLastSavedSnapshot(JSON.stringify(toApiPayload(blank)));
-    setSelectedSavedSchematicId("");
-    setPendingSavedDelete(null);
-    setStatusMessage("Saved schematic deleted from this browser");
-    void loadSchematicList();
   }
 
   function exportJson() {
-    download(`${model.name}.json`, "application/json", JSON.stringify(toApiPayload(model), null, 2));
+    download(
+      `${model.name}.json`,
+      "application/json",
+      JSON.stringify(toApiPayload(model), null, 2),
+    );
   }
 
   function exportCsv() {
     // Feature 1 has no simulation yet, so computed CSV columns are present but blank.
     const rows = [
-      ["kind", "id", "label", "type", "from", "to", "x", "y", "flow_rate", "pressure_head", "headloss"],
-      ...model.nodes.map((node) => ["NODE", node.id, node.label, node.type, "", "", String(node.x), String(node.y), "", "", ""]),
-      ...model.links.map((link) => ["LINK", link.id, link.label, link.type, link.from_node_id ?? "", link.to_node_id ?? "", "", "", "", "", ""]),
+      [
+        "kind",
+        "id",
+        "label",
+        "type",
+        "from",
+        "to",
+        "x",
+        "y",
+        "flow_rate",
+        "pressure_head",
+        "headloss",
+      ],
+      ...model.nodes.map((node) => [
+        "NODE",
+        node.id,
+        node.label,
+        node.type,
+        "",
+        "",
+        String(node.x),
+        String(node.y),
+        "",
+        "",
+        "",
+      ]),
+      ...model.links.map((link) => [
+        "LINK",
+        link.id,
+        link.label,
+        link.type,
+        link.from_node_id ?? "",
+        link.to_node_id ?? "",
+        "",
+        "",
+        "",
+        "",
+        "",
+      ]),
     ];
-    download(`${model.name}.csv`, "text/csv", rows.map((row) => row.map(csvCell).join(",")).join("\n"));
+    download(
+      `${model.name}.csv`,
+      "text/csv",
+      rows.map((row) => row.map(csvCell).join(",")).join("\n"),
+    );
   }
 
   function exportSvg() {
@@ -728,7 +1012,11 @@ export default function BuilderPage() {
     if (!svg) return;
     const clone = svg.cloneNode(true) as SVGSVGElement;
     clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-    download(`${model.name}.svg`, "image/svg+xml", new XMLSerializer().serializeToString(clone));
+    download(
+      `${model.name}.svg`,
+      "image/svg+xml",
+      new XMLSerializer().serializeToString(clone),
+    );
   }
 
   function exportPng() {
@@ -757,17 +1045,24 @@ export default function BuilderPage() {
     image.src = url;
   }
 
-  const selectionBox = dragState?.kind === "select" ? normalizeBox(dragState.start, dragState.current) : null;
+  const selectionBox =
+    dragState?.kind === "select"
+      ? normalizeBox(dragState.start, dragState.current)
+      : null;
 
   return (
     <main className="flex h-screen min-h-180 flex-col overflow-hidden bg-slate-100 text-slate-950">
       <header className="flex h-14 shrink-0 items-center justify-between border-b border-slate-300 bg-white px-4 shadow-sm">
         <div className="flex min-w-0 items-center gap-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded border border-cyan-700 bg-cyan-700 text-sm font-bold text-white">A</div>
+          <div className="flex h-9 w-9 items-center justify-center rounded border border-cyan-700 bg-cyan-700 text-sm font-bold text-white">
+            A
+          </div>
           <div className="min-w-0">
             <input
               value={model.name}
-              onChange={(event) => commit((draft) => ({ ...draft, name: event.target.value }))}
+              onChange={(event) =>
+                commit((draft) => ({ ...draft, name: event.target.value }))
+              }
               className="w-52 rounded border border-transparent px-1 text-sm font-semibold focus:border-cyan-700 focus:outline-none"
               aria-label="Schematic name"
             />
@@ -776,8 +1071,16 @@ export default function BuilderPage() {
         </div>
 
         <div className="flex items-center gap-2">
-          <ToolbarButton label="Undo" disabled={history.past.length === 0} onClick={undo} />
-          <ToolbarButton label="Redo" disabled={history.future.length === 0} onClick={redo} />
+          <ToolbarButton
+            label="Undo"
+            disabled={history.past.length === 0}
+            onClick={undo}
+          />
+          <ToolbarButton
+            label="Redo"
+            disabled={history.future.length === 0}
+            onClick={redo}
+          />
           <div className="mx-1 h-7 w-px bg-slate-300" />
           <ToolbarButton label="-" onClick={() => nudgeZoom(-ZOOM_STEP)} />
           <input
@@ -791,7 +1094,9 @@ export default function BuilderPage() {
             aria-label="Canvas zoom"
           />
           <ToolbarButton label="+" onClick={() => nudgeZoom(ZOOM_STEP)} />
-          <output className="w-14 text-right text-xs tabular-nums text-slate-600">{model.canvas_state.zoom}%</output>
+          <output className="w-14 text-right text-xs tabular-nums text-slate-600">
+            {model.canvas_state.zoom}%
+          </output>
           <ToolbarButton label="Fit" onClick={fitDiagramToView} />
           <div className="mx-1 h-7 w-px bg-slate-300" />
           <label className="flex items-center gap-1 text-xs font-medium text-slate-600">
@@ -800,7 +1105,15 @@ export default function BuilderPage() {
               aria-label="Line color"
               type="color"
               value={model.styling.line_color}
-              onChange={(event) => setModel((current) => ({ ...current, styling: { ...current.styling, line_color: event.target.value } }))}
+              onChange={(event) =>
+                setModel((current) => ({
+                  ...current,
+                  styling: {
+                    ...current.styling,
+                    line_color: event.target.value,
+                  },
+                }))
+              }
               className="h-8 w-9 rounded border border-slate-300 bg-white"
             />
           </label>
@@ -812,7 +1125,15 @@ export default function BuilderPage() {
               min="1"
               max="8"
               value={model.styling.line_thickness}
-              onChange={(event) => setModel((current) => ({ ...current, styling: { ...current.styling, line_thickness: clamp(Number(event.target.value), 1, 8) } }))}
+              onChange={(event) =>
+                setModel((current) => ({
+                  ...current,
+                  styling: {
+                    ...current.styling,
+                    line_thickness: clamp(Number(event.target.value), 1, 8),
+                  },
+                }))
+              }
               className="h-8 w-14 rounded border border-slate-300 px-2 text-xs"
             />
           </label>
@@ -825,7 +1146,15 @@ export default function BuilderPage() {
               max="2"
               step="0.1"
               value={model.styling.symbol_size}
-              onChange={(event) => setModel((current) => ({ ...current, styling: { ...current.styling, symbol_size: clamp(Number(event.target.value), 0.5, 2) } }))}
+              onChange={(event) =>
+                setModel((current) => ({
+                  ...current,
+                  styling: {
+                    ...current.styling,
+                    symbol_size: clamp(Number(event.target.value), 0.5, 2),
+                  },
+                }))
+              }
               className="h-8 w-14 rounded border border-slate-300 px-2 text-xs"
             />
           </label>
@@ -834,9 +1163,19 @@ export default function BuilderPage() {
               Strainer settings
             </summary>
             <div className="absolute right-0 z-20 mt-2 w-64 rounded border border-slate-300 bg-white p-3 shadow-lg">
-              <p className="mb-3 text-xs text-slate-600">Headloss multipliers saved with this schematic.</p>
-              {(Object.entries(model.filter_multipliers) as [keyof SchematicModel["filter_multipliers"], number][]).map(([key, value]) => (
-                <label key={key} className="mb-2 flex items-center justify-between gap-3 text-xs font-medium capitalize text-slate-600">
+              <p className="mb-3 text-xs text-slate-600">
+                Headloss multipliers saved with this schematic.
+              </p>
+              {(
+                Object.entries(model.filter_multipliers) as [
+                  keyof SchematicModel["filter_multipliers"],
+                  number,
+                ][]
+              ).map(([key, value]) => (
+                <label
+                  key={key}
+                  className="mb-2 flex items-center justify-between gap-3 text-xs font-medium capitalize text-slate-600"
+                >
                   <span>{key.replaceAll("_", " ")}</span>
                   <input
                     aria-label={`${key.replaceAll("_", " ")} multiplier`}
@@ -848,7 +1187,10 @@ export default function BuilderPage() {
                       const nextValue = Math.max(0, Number(event.target.value));
                       setModel((current) => ({
                         ...current,
-                        filter_multipliers: { ...current.filter_multipliers, [key]: nextValue },
+                        filter_multipliers: {
+                          ...current.filter_multipliers,
+                          [key]: nextValue,
+                        },
                       }));
                     }}
                     className="h-8 w-20 rounded border border-slate-300 px-2 text-xs"
@@ -860,11 +1202,25 @@ export default function BuilderPage() {
         </div>
 
         <div className="flex items-center gap-2">
-          <label className="text-xs font-medium text-slate-500" htmlFor="dev-user">User</label>
-          <input id="dev-user" value={devUserId} onChange={(event) => setDevUserId(event.target.value)} className="h-8 w-24 rounded border border-slate-300 px-2 text-xs" />
+          <label
+            className="text-xs font-medium text-slate-500"
+            htmlFor="dev-user"
+          >
+            User
+          </label>
+          <input
+            id="dev-user"
+            value={devUserId}
+            onChange={(event) => setDevUserId(event.target.value)}
+            className="h-8 w-24 rounded border border-slate-300 px-2 text-xs"
+          />
           <ToolbarButton label="List" onClick={loadSchematicList} />
           <ToolbarButton label="Save" onClick={saveSchematic} />
-          <ToolbarButton label="Delete" disabled={!model.id} onClick={deleteSchematic} />
+          <ToolbarButton
+            label="Delete"
+            disabled={!model.id}
+            onClick={deleteSchematic}
+          />
         </div>
       </header>
 
@@ -872,29 +1228,63 @@ export default function BuilderPage() {
         <div className="flex shrink-0 items-center justify-between border-b border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-950">
           <span>A local draft is available from this browser.</span>
           <div className="flex items-center gap-2">
-            <ToolbarButton label="Restore local draft" onClick={restoreRecoveryDraft} />
-            <ToolbarButton label="Discard draft" onClick={discardRecoveryDraft} />
+            <ToolbarButton
+              label="Restore local draft"
+              onClick={restoreRecoveryDraft}
+            />
+            <ToolbarButton
+              label="Discard draft"
+              onClick={discardRecoveryDraft}
+            />
           </div>
         </div>
       )}
 
-      <div className="grid min-h-0 flex-1" style={{ gridTemplateColumns: `280px minmax(0, 1fr) ${rightPanelWidth}px` }}>
+      <div
+        className="grid min-h-0 flex-1"
+        style={{
+          gridTemplateColumns: `280px minmax(0, 1fr) ${rightPanelWidth}px`,
+        }}
+      >
         <aside className="flex min-h-0 flex-col border-r border-slate-300 bg-white">
-          <PanelHeader title="Element Palette" detail="Click or drag onto canvas" />
+          <PanelHeader
+            title="Element Palette"
+            detail="Click or drag onto canvas"
+          />
           <div className="min-h-0 flex-1 overflow-y-auto p-3">
-            <PaletteGroup title="Nodes" tools={nodeTools} activeTool={activeTool} onPick={setActiveTool} />
-            <PaletteGroup title="Links" tools={linkTools} activeTool={activeTool} onPick={setActiveTool} />
+            <PaletteGroup
+              title="Nodes"
+              tools={nodeTools}
+              activeTool={activeTool}
+              onPick={setActiveTool}
+            />
+            <PaletteGroup
+              title="Links"
+              tools={linkTools}
+              activeTool={activeTool}
+              onPick={setActiveTool}
+            />
 
             <section className="mt-4 rounded border border-slate-200 bg-slate-50 p-3">
-              <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Parameter Labels</h2>
+              <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Parameter Labels
+              </h2>
               <div className="mt-3 grid grid-cols-1 gap-2">
                 {Object.entries(model.visibility).map(([key, value]) => (
-                  <label key={key} className="flex items-center justify-between rounded border border-slate-200 bg-white px-3 py-2 text-sm capitalize">
+                  <label
+                    key={key}
+                    className="flex items-center justify-between rounded border border-slate-200 bg-white px-3 py-2 text-sm capitalize"
+                  >
                     <span>{key}</span>
                     <input
                       type="checkbox"
                       checked={value}
-                      onChange={() => setModel((current) => ({ ...current, visibility: { ...current.visibility, [key]: !value } }))}
+                      onChange={() =>
+                        setModel((current) => ({
+                          ...current,
+                          visibility: { ...current.visibility, [key]: !value },
+                        }))
+                      }
                       className="h-4 w-4 accent-cyan-700"
                     />
                   </label>
@@ -903,15 +1293,23 @@ export default function BuilderPage() {
             </section>
 
             <section className="mt-4 rounded border border-slate-200 bg-white p-3">
-              <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Saved Schematics</h2>
+              <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Saved Schematics
+              </h2>
               <select
                 className="mt-3 h-9 w-full rounded border border-slate-300 text-sm"
-                onChange={(event) => setSelectedSavedSchematicId(event.target.value)}
+                onChange={(event) =>
+                  setSelectedSavedSchematicId(event.target.value)
+                }
                 value={selectedSavedSchematicId}
                 aria-label="Saved schematic"
               >
                 <option value="">Select to load</option>
-                {schematicList.map((schematic) => <option key={schematic.id} value={schematic.id}>{schematic.name}</option>)}
+                {schematicList.map((schematic) => (
+                  <option key={schematic.id} value={schematic.id}>
+                    {schematic.name}
+                  </option>
+                ))}
               </select>
               <button
                 type="button"
@@ -953,12 +1351,19 @@ export default function BuilderPage() {
             }}
             onDrop={(event) => {
               event.preventDefault();
-              const tool = event.dataTransfer.getData("application/audrolics-tool") as ToolType;
+              const tool = event.dataTransfer.getData(
+                "application/audrolics-tool",
+              ) as ToolType;
               const point = screenToWorld(event.clientX, event.clientY);
               if (isNodeTool(tool)) createNode(tool, point);
               if (isLinkTool(tool)) {
                 const node = nearestNode(point);
-                if (node) setPendingLink({ type: tool, fromNodeId: node.id, cursor: point });
+                if (node)
+                  setPendingLink({
+                    type: tool,
+                    fromNodeId: node.id,
+                    cursor: point,
+                  });
                 setActiveTool(tool);
               }
             }}
@@ -970,41 +1375,96 @@ export default function BuilderPage() {
             onKeyDown={handleKeyDown}
             onKeyUp={handleKeyUp}
           >
-            <svg ref={svgRef} className="h-full w-full select-none bg-slate-100">
+            <svg
+              ref={svgRef}
+              className="h-full w-full select-none bg-slate-100"
+            >
               <defs>
-                <pattern id="minor-grid" width="24" height="24" patternUnits="userSpaceOnUse">
-                  <path d="M 24 0 L 0 0 0 24" fill="none" stroke="#d9e2ea" strokeWidth="1" />
+                <pattern
+                  id="minor-grid"
+                  width="24"
+                  height="24"
+                  patternUnits="userSpaceOnUse"
+                >
+                  <path
+                    d="M 24 0 L 0 0 0 24"
+                    fill="none"
+                    stroke="#d9e2ea"
+                    strokeWidth="1"
+                  />
                 </pattern>
-                <pattern id="major-grid" width="120" height="120" patternUnits="userSpaceOnUse">
+                <pattern
+                  id="major-grid"
+                  width="120"
+                  height="120"
+                  patternUnits="userSpaceOnUse"
+                >
                   <rect width="120" height="120" fill="url(#minor-grid)" />
-                  <path d="M 120 0 L 0 0 0 120" fill="none" stroke="#b8c6d2" strokeWidth="1.25" />
+                  <path
+                    d="M 120 0 L 0 0 0 120"
+                    fill="none"
+                    stroke="#b8c6d2"
+                    strokeWidth="1.25"
+                  />
                 </pattern>
               </defs>
               <g transform={transform}>
-                <rect x="-2400" y="-1800" width="4800" height="3600" fill="url(#major-grid)" />
+                <rect
+                  x="-2400"
+                  y="-1800"
+                  width="4800"
+                  height="3600"
+                  fill="url(#major-grid)"
+                />
                 {model.links.map((link) => (
                   <LinkShape
                     key={link.id}
                     link={link}
                     model={model}
-                    selected={selection.some((item) => item.kind === "link" && item.id === link.id)}
+                    selected={selection.some(
+                      (item) => item.kind === "link" && item.id === link.id,
+                    )}
                     onPointerDown={handleLinkPointerDown}
-                    onContextMenu={(event) => openElementContextMenu(event, { kind: "link", id: link.id })}
+                    onContextMenu={(event) =>
+                      openElementContextMenu(event, {
+                        kind: "link",
+                        id: link.id,
+                      })
+                    }
                   />
                 ))}
-                {pendingLink && <PendingLink model={model} pendingLink={pendingLink} />}
+                {pendingLink && (
+                  <PendingLink model={model} pendingLink={pendingLink} />
+                )}
                 {model.nodes.map((node) => (
                   <NodeShape
                     key={node.id}
                     node={node}
                     model={model}
-                    selected={selection.some((item) => item.kind === "node" && item.id === node.id)}
+                    selected={selection.some(
+                      (item) => item.kind === "node" && item.id === node.id,
+                    )}
                     onPointerDown={handleNodePointerDown}
                     onPointerUp={handleNodeClick}
-                    onContextMenu={(event) => openElementContextMenu(event, { kind: "node", id: node.id })}
+                    onContextMenu={(event) =>
+                      openElementContextMenu(event, {
+                        kind: "node",
+                        id: node.id,
+                      })
+                    }
                   />
                 ))}
-                {selectionBox && <rect x={selectionBox.x} y={selectionBox.y} width={selectionBox.width} height={selectionBox.height} fill="rgba(14,116,144,0.08)" stroke="#0e7490" strokeDasharray="6 4" />}
+                {selectionBox && (
+                  <rect
+                    x={selectionBox.x}
+                    y={selectionBox.y}
+                    width={selectionBox.width}
+                    height={selectionBox.height}
+                    fill="rgba(14,116,144,0.08)"
+                    stroke="#0e7490"
+                    strokeDasharray="6 4"
+                  />
+                )}
               </g>
             </svg>
           </div>
@@ -1017,9 +1477,18 @@ export default function BuilderPage() {
             className="absolute left-0 top-0 h-full w-1 cursor-col-resize bg-transparent hover:bg-cyan-600"
             onPointerDown={() => setIsResizingPanel(true)}
           />
-          <PanelHeader title="Properties" detail={selection.length === 0 ? "No element selected" : `${selection.length} selected`} />
+          <PanelHeader
+            title="Properties"
+            detail={
+              selection.length === 0
+                ? "No element selected"
+                : `${selection.length} selected`
+            }
+          />
           <div className="min-h-0 flex-1 overflow-y-auto p-4">
-            {selection.length !== 1 && <EmptyProperties selectionCount={selection.length} />}
+            {selection.length !== 1 && (
+              <EmptyProperties selectionCount={selection.length} />
+            )}
             {selectedNode && (
               <ElementForm
                 elementId={selectedNode.id}
@@ -1030,9 +1499,13 @@ export default function BuilderPage() {
                 touched={touched}
                 errors={validation}
                 showAllErrors={showAllErrors}
-                onTouch={(field) => setTouched((current) => new Set(current).add(field))}
+                onTouch={(field) =>
+                  setTouched((current) => new Set(current).add(field))
+                }
                 onRename={renameSelected}
-                onParamChange={(key, value) => updateNodeParam(selectedNode.id, key, value)}
+                onParamChange={(key, value) =>
+                  updateNodeParam(selectedNode.id, key, value)
+                }
               />
             )}
             {selectedLink && (
@@ -1045,9 +1518,13 @@ export default function BuilderPage() {
                 touched={touched}
                 errors={validation}
                 showAllErrors={showAllErrors}
-                onTouch={(field) => setTouched((current) => new Set(current).add(field))}
+                onTouch={(field) =>
+                  setTouched((current) => new Set(current).add(field))
+                }
                 onRename={renameSelected}
-                onParamChange={(key, value) => updateLinkParam(selectedLink.id, key, value)}
+                onParamChange={(key, value) =>
+                  updateLinkParam(selectedLink.id, key, value)
+                }
               />
             )}
           </div>
@@ -1082,10 +1559,18 @@ export default function BuilderPage() {
       {pendingSavedDelete && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/30 p-6">
           <section className="w-full max-w-sm rounded border border-slate-300 bg-white p-5 shadow-lg">
-            <h2 className="text-base font-semibold text-slate-950">Delete saved schematic?</h2>
-            <p className="mt-2 text-sm leading-6 text-slate-600">This removes the saved copy from this browser. The action cannot be undone.</p>
+            <h2 className="text-base font-semibold text-slate-950">
+              Delete saved schematic?
+            </h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">
+              This removes the saved copy from this browser. The action cannot
+              be undone.
+            </p>
             <div className="mt-5 flex justify-end gap-2">
-              <ToolbarButton label="Keep schematic" onClick={() => setPendingSavedDelete(null)} />
+              <ToolbarButton
+                label="Keep schematic"
+                onClick={() => setPendingSavedDelete(null)}
+              />
               <button
                 type="button"
                 onClick={confirmDeleteSchematic}
@@ -1114,24 +1599,37 @@ function PaletteGroup({
 }) {
   return (
     <section className="mb-4">
-      <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">{title}</h2>
+      <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+        {title}
+      </h2>
       <div className="grid grid-cols-1 gap-2">
         {tools.map((tool) => (
           <button
             key={tool.type}
             type="button"
             draggable
-            onDragStart={(event) => event.dataTransfer.setData("application/audrolics-tool", tool.type)}
+            onDragStart={(event) =>
+              event.dataTransfer.setData(
+                "application/audrolics-tool",
+                tool.type,
+              )
+            }
             aria-pressed={activeTool === tool.type}
             onClick={() => onPick(activeTool === tool.type ? null : tool.type)}
             className={`flex items-center gap-3 rounded border px-3 py-2 text-left transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-700 ${
-              activeTool === tool.type ? "border-cyan-700 bg-cyan-50 text-cyan-950" : "border-slate-200 bg-white text-slate-800 hover:border-cyan-700"
+              activeTool === tool.type
+                ? "border-cyan-700 bg-cyan-50 text-cyan-950"
+                : "border-slate-200 bg-white text-slate-800 hover:border-cyan-700"
             }`}
           >
-            <span className="flex h-9 w-10 shrink-0 items-center justify-center rounded border border-slate-300 bg-slate-50 text-xs font-bold">{tool.code}</span>
+            <span className="flex h-9 w-10 shrink-0 items-center justify-center rounded border border-slate-300 bg-slate-50 text-xs font-bold">
+              {tool.code}
+            </span>
             <span className="min-w-0">
               <span className="block text-sm font-medium">{tool.label}</span>
-              <span className="block truncate text-xs text-slate-500">{tool.detail}</span>
+              <span className="block truncate text-xs text-slate-500">
+                {tool.detail}
+              </span>
             </span>
           </button>
         ))}
@@ -1151,28 +1649,99 @@ function NodeShape({
   node: BuilderNode;
   model: SchematicModel;
   selected: boolean;
-  onPointerDown: (event: ReactPointerEvent<SVGGElement>, node: BuilderNode) => void;
-  onPointerUp: (event: ReactPointerEvent<SVGGElement>, node: BuilderNode) => void;
+  onPointerDown: (
+    event: ReactPointerEvent<SVGGElement>,
+    node: BuilderNode,
+  ) => void;
+  onPointerUp: (
+    event: ReactPointerEvent<SVGGElement>,
+    node: BuilderNode,
+  ) => void;
   onContextMenu: (event: ReactMouseEvent<SVGGElement>) => void;
 }) {
   const size = 18 * model.styling.symbol_size;
   return (
-    <g data-element-id={node.id} className="cursor-pointer" onPointerDown={(event) => onPointerDown(event, node)} onPointerUp={(event) => onPointerUp(event, node)} onContextMenu={onContextMenu}>
-      {node.type === "JUNCTION" && <circle cx={node.x} cy={node.y} r={size / 2} fill="#e0f2fe" stroke="#075985" strokeWidth={selected ? 4 : 2} />}
+    <g
+      data-element-id={node.id}
+      className="cursor-pointer"
+      onPointerDown={(event) => onPointerDown(event, node)}
+      onPointerUp={(event) => onPointerUp(event, node)}
+      onContextMenu={onContextMenu}
+    >
+      {node.type === "JUNCTION" && (
+        <circle
+          cx={node.x}
+          cy={node.y}
+          r={size / 2}
+          fill="#e0f2fe"
+          stroke="#075985"
+          strokeWidth={selected ? 4 : 2}
+        />
+      )}
       {node.type === "RESERVOIR" && (
         <g>
-          <polygon points={`${node.x},${node.y - size} ${node.x - size},${node.y + size} ${node.x + size},${node.y + size}`} fill="#ecfeff" stroke="#0e7490" strokeWidth={selected ? 4 : 2} />
-          <line x1={node.x - size * 0.5} y1={node.y + size * 0.4} x2={node.x + size * 0.5} y2={node.y + size * 0.4} stroke="#0e7490" strokeWidth="2" />
+          <polygon
+            points={`${node.x},${node.y - size} ${node.x - size},${node.y + size} ${node.x + size},${node.y + size}`}
+            fill="#ecfeff"
+            stroke="#0e7490"
+            strokeWidth={selected ? 4 : 2}
+          />
+          <line
+            x1={node.x - size * 0.5}
+            y1={node.y + size * 0.4}
+            x2={node.x + size * 0.5}
+            y2={node.y + size * 0.4}
+            stroke="#0e7490"
+            strokeWidth="2"
+          />
         </g>
       )}
-      {node.type === "TANK" && <rect x={node.x - size} y={node.y - size * 0.7} width={size * 2} height={size * 1.4} rx="3" fill="#f0fdfa" stroke="#0f766e" strokeWidth={selected ? 4 : 2} />}
-      <text x={node.x + size + 4} y={node.y + 4} fill="#0f172a" fontSize="12" fontWeight="600">{node.label}</text>
-      {model.visibility.elevation && (typeof node.input_params.elevation === "string" || typeof node.input_params.elevation === "number") && node.input_params.elevation !== "" && (
-        <text x={node.x + size + 4} y={node.y + 18} fill="#64748b" fontSize="11">Elev {node.input_params.elevation} m</text>
+      {node.type === "TANK" && (
+        <rect
+          x={node.x - size}
+          y={node.y - size * 0.7}
+          width={size * 2}
+          height={size * 1.4}
+          rx="3"
+          fill="#f0fdfa"
+          stroke="#0f766e"
+          strokeWidth={selected ? 4 : 2}
+        />
       )}
-      {model.visibility.pressure && node.computed.pressure_head !== null && node.computed.pressure_head !== undefined && (
-        <text x={node.x + size + 4} y={node.y + 32} fill="#64748b" fontSize="11">Pressure {node.computed.pressure_head} m</text>
-      )}
+      <text
+        x={node.x + size + 4}
+        y={node.y + 4}
+        fill="#0f172a"
+        fontSize="12"
+        fontWeight="600"
+      >
+        {node.label}
+      </text>
+      {model.visibility.elevation &&
+        (typeof node.input_params.elevation === "string" ||
+          typeof node.input_params.elevation === "number") &&
+        node.input_params.elevation !== "" && (
+          <text
+            x={node.x + size + 4}
+            y={node.y + 18}
+            fill="#64748b"
+            fontSize="11"
+          >
+            Elev {node.input_params.elevation} m
+          </text>
+        )}
+      {model.visibility.pressure &&
+        node.computed.pressure_head !== null &&
+        node.computed.pressure_head !== undefined && (
+          <text
+            x={node.x + size + 4}
+            y={node.y + 32}
+            fill="#64748b"
+            fontSize="11"
+          >
+            Pressure {node.computed.pressure_head} m
+          </text>
+        )}
     </g>
   );
 }
@@ -1187,7 +1756,10 @@ function LinkShape({
   link: BuilderLink;
   model: SchematicModel;
   selected: boolean;
-  onPointerDown: (event: ReactPointerEvent<SVGGElement>, link: BuilderLink) => void;
+  onPointerDown: (
+    event: ReactPointerEvent<SVGGElement>,
+    link: BuilderLink,
+  ) => void;
   onContextMenu: (event: ReactMouseEvent<SVGGElement>) => void;
 }) {
   const from = model.nodes.find((node) => node.id === link.from_node_id);
@@ -1196,35 +1768,122 @@ function LinkShape({
   const mid = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
   const stroke = selected ? "#f97316" : model.styling.line_color;
   return (
-    <g data-element-id={link.id} className="cursor-pointer" onPointerDown={(event) => onPointerDown(event, link)} onContextMenu={onContextMenu}>
-      <line x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke="transparent" strokeWidth="18" />
-      <line x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke={stroke} strokeWidth={selected ? model.styling.line_thickness + 2 : model.styling.line_thickness} />
+    <g
+      data-element-id={link.id}
+      className="cursor-pointer"
+      onPointerDown={(event) => onPointerDown(event, link)}
+      onContextMenu={onContextMenu}
+    >
+      <line
+        x1={from.x}
+        y1={from.y}
+        x2={to.x}
+        y2={to.y}
+        stroke="transparent"
+        strokeWidth="18"
+      />
+      <line
+        x1={from.x}
+        y1={from.y}
+        x2={to.x}
+        y2={to.y}
+        stroke={stroke}
+        strokeWidth={
+          selected
+            ? model.styling.line_thickness + 2
+            : model.styling.line_thickness
+        }
+      />
       <LinkSymbol link={link} mid={mid} />
-      <text x={mid.x + 10} y={mid.y - 8} fill="#0f172a" fontSize="12" fontWeight="600">{link.label}</text>
-      {model.visibility.length && typeof link.input_params.length === "string" && link.input_params.length !== "" && (
-        <text x={mid.x + 10} y={mid.y + 8} fill="#64748b" fontSize="11">{link.input_params.length} m</text>
-      )}
-      {model.visibility.diameter && (typeof link.input_params.diameter === "string" || typeof link.input_params.diameter === "number") && link.input_params.diameter !== "" && (
-        <text x={mid.x + 10} y={mid.y + 22} fill="#64748b" fontSize="11">Dia {link.input_params.diameter} mm</text>
-      )}
-      {model.visibility.flow && link.computed.flow_rate !== null && link.computed.flow_rate !== undefined && (
-        <text x={mid.x + 10} y={mid.y + 36} fill="#64748b" fontSize="11">Flow {link.computed.flow_rate} L/s</text>
-      )}
+      <text
+        x={mid.x + 10}
+        y={mid.y - 8}
+        fill="#0f172a"
+        fontSize="12"
+        fontWeight="600"
+      >
+        {link.label}
+      </text>
+      {model.visibility.length &&
+        typeof link.input_params.length === "string" &&
+        link.input_params.length !== "" && (
+          <text x={mid.x + 10} y={mid.y + 8} fill="#64748b" fontSize="11">
+            {link.input_params.length} m
+          </text>
+        )}
+      {model.visibility.diameter &&
+        (typeof link.input_params.diameter === "string" ||
+          typeof link.input_params.diameter === "number") &&
+        link.input_params.diameter !== "" && (
+          <text x={mid.x + 10} y={mid.y + 22} fill="#64748b" fontSize="11">
+            Dia {link.input_params.diameter} mm
+          </text>
+        )}
+      {model.visibility.flow &&
+        link.computed.flow_rate !== null &&
+        link.computed.flow_rate !== undefined && (
+          <text x={mid.x + 10} y={mid.y + 36} fill="#64748b" fontSize="11">
+            Flow {link.computed.flow_rate} L/s
+          </text>
+        )}
     </g>
   );
 }
 
 function LinkSymbol({ link, mid }: { link: BuilderLink; mid: Point }) {
-  if (link.type === "PIPE") return <circle cx={mid.x} cy={mid.y} r="3" fill="#0f766e" />;
-  if (link.type === "PUMP") return <circle cx={mid.x} cy={mid.y} r="10" fill="#fff7ed" stroke="#c2410c" strokeWidth="2" />;
-  if (link.type === "VALVE") return <polygon points={`${mid.x - 10},${mid.y - 8} ${mid.x},${mid.y} ${mid.x - 10},${mid.y + 8} ${mid.x + 10},${mid.y + 8} ${mid.x},${mid.y} ${mid.x + 10},${mid.y - 8}`} fill="#fef3c7" stroke="#a16207" strokeWidth="2" />;
-  return <polygon points={`${mid.x},${mid.y - 12} ${mid.x + 12},${mid.y} ${mid.x},${mid.y + 12} ${mid.x - 12},${mid.y}`} fill="#f8fafc" stroke="#475569" strokeDasharray="3 2" strokeWidth="2" />;
+  if (link.type === "PIPE")
+    return <circle cx={mid.x} cy={mid.y} r="3" fill="#0f766e" />;
+  if (link.type === "PUMP")
+    return (
+      <circle
+        cx={mid.x}
+        cy={mid.y}
+        r="10"
+        fill="#fff7ed"
+        stroke="#c2410c"
+        strokeWidth="2"
+      />
+    );
+  if (link.type === "VALVE")
+    return (
+      <polygon
+        points={`${mid.x - 10},${mid.y - 8} ${mid.x},${mid.y} ${mid.x - 10},${mid.y + 8} ${mid.x + 10},${mid.y + 8} ${mid.x},${mid.y} ${mid.x + 10},${mid.y - 8}`}
+        fill="#fef3c7"
+        stroke="#a16207"
+        strokeWidth="2"
+      />
+    );
+  return (
+    <polygon
+      points={`${mid.x},${mid.y - 12} ${mid.x + 12},${mid.y} ${mid.x},${mid.y + 12} ${mid.x - 12},${mid.y}`}
+      fill="#f8fafc"
+      stroke="#475569"
+      strokeDasharray="3 2"
+      strokeWidth="2"
+    />
+  );
 }
 
-function PendingLink({ model, pendingLink }: { model: SchematicModel; pendingLink: { fromNodeId: string; cursor: Point } }) {
+function PendingLink({
+  model,
+  pendingLink,
+}: {
+  model: SchematicModel;
+  pendingLink: { fromNodeId: string; cursor: Point };
+}) {
   const from = model.nodes.find((node) => node.id === pendingLink.fromNodeId);
   if (!from) return null;
-  return <line x1={from.x} y1={from.y} x2={pendingLink.cursor.x} y2={pendingLink.cursor.y} stroke="#f97316" strokeWidth="2" strokeDasharray="8 6" />;
+  return (
+    <line
+      x1={from.x}
+      y1={from.y}
+      x2={pendingLink.cursor.x}
+      y2={pendingLink.cursor.y}
+      stroke="#f97316"
+      strokeWidth="2"
+      strokeDasharray="8 6"
+    />
+  );
 }
 
 function ElementForm(props: {
@@ -1245,13 +1904,19 @@ function ElementForm(props: {
     <div className="space-y-4">
       <section className="rounded border border-slate-200 bg-white p-4">
         <label className="text-xs font-medium text-slate-500">Label</label>
-        <input value={props.label} onChange={(event) => props.onRename(event.target.value)} className="mt-1 h-9 w-full rounded border border-slate-300 px-2 text-sm" />
+        <input
+          value={props.label}
+          onChange={(event) => props.onRename(event.target.value)}
+          className="mt-1 h-9 w-full rounded border border-slate-300 px-2 text-sm"
+        />
         <p className="mt-2 text-xs text-slate-500">{props.type}</p>
       </section>
 
       <section className="rounded border border-slate-200 bg-white">
         <div className="border-b border-slate-200 px-4 py-3">
-          <h2 className="text-sm font-semibold text-slate-900">Input Parameters</h2>
+          <h2 className="text-sm font-semibold text-slate-900">
+            Input Parameters
+          </h2>
         </div>
         <div className="space-y-3 p-4">
           {fields.map((field) => (
@@ -1272,13 +1937,22 @@ function ElementForm(props: {
 
       <section className="rounded border border-slate-200 bg-slate-100">
         <div className="border-b border-slate-200 px-4 py-3">
-          <h2 className="text-sm font-semibold text-slate-900">Computed Results</h2>
-          <p className="mt-1 text-xs text-slate-500">Read-only until simulation is implemented.</p>
+          <h2 className="text-sm font-semibold text-slate-900">
+            Computed Results
+          </h2>
+          <p className="mt-1 text-xs text-slate-500">
+            Read-only until simulation is implemented.
+          </p>
         </div>
         <div className="space-y-2 p-4">
           {Object.keys(computedForType(props.type)).map((key) => (
-            <div key={key} className="flex justify-between rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs">
-              <span className="font-medium text-slate-600">{labelize(key)}</span>
+            <div
+              key={key}
+              className="flex justify-between rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs"
+            >
+              <span className="font-medium text-slate-600">
+                {labelize(key)}
+              </span>
               <span className="text-slate-400">Pending</span>
             </div>
           ))}
@@ -1306,16 +1980,30 @@ function FieldControl(props: {
   const fieldKey = `${props.elementId}.${props.field.key}`;
   // Blank required fields are allowed while placing elements; errors become
   // visible after the user touches a field or presses Save.
-  const showError = props.error && (props.showAllErrors || props.touched.has(fieldKey));
+  const showError =
+    props.error && (props.showAllErrors || props.touched.has(fieldKey));
   if (props.field.kind === "select") {
     return (
       <label className="block">
-        <span className="text-xs font-medium text-slate-500">{props.field.label}</span>
-        <select value={String(props.value ?? "")} onBlur={() => props.onTouch(fieldKey)} onChange={(event) => props.onChange(event.target.value)} className="mt-1 h-9 w-full rounded border border-slate-300 px-2 text-sm">
+        <span className="text-xs font-medium text-slate-500">
+          {props.field.label}
+        </span>
+        <select
+          value={String(props.value ?? "")}
+          onBlur={() => props.onTouch(fieldKey)}
+          onChange={(event) => props.onChange(event.target.value)}
+          className="mt-1 h-9 w-full rounded border border-slate-300 px-2 text-sm"
+        >
           <option value="">Select</option>
-          {props.field.options.map((option) => <option key={option} value={option}>{option}</option>)}
+          {props.field.options.map((option) => (
+            <option key={option} value={option}>
+              {option}
+            </option>
+          ))}
         </select>
-        {showError && <p className="mt-1 text-xs text-red-600">{props.error}</p>}
+        {showError && (
+          <p className="mt-1 text-xs text-red-600">{props.error}</p>
+        )}
       </label>
     );
   }
@@ -1326,29 +2014,86 @@ function FieldControl(props: {
     return (
       <div>
         <div className="mb-2 flex items-center justify-between">
-          <span className="text-xs font-medium text-slate-500">{props.field.label}</span>
-          <button type="button" onClick={() => props.onChange([...points, { flow: "", [yKey]: "" }])} className="rounded border border-slate-300 px-2 py-1 text-xs">Add row</button>
+          <span className="text-xs font-medium text-slate-500">
+            {props.field.label}
+          </span>
+          <button
+            type="button"
+            onClick={() =>
+              props.onChange([...points, { flow: "", [yKey]: "" }])
+            }
+            className="rounded border border-slate-300 px-2 py-1 text-xs"
+          >
+            Add row
+          </button>
         </div>
         <div className="space-y-2">
           {points.map((point, index) => (
             <div key={index} className="grid grid-cols-[1fr_1fr_auto] gap-2">
-              <input placeholder="Flow" value={point.flow} onChange={(event) => props.onChange(points.map((item, itemIndex) => itemIndex === index ? { ...item, flow: event.target.value } : item))} onBlur={() => props.onTouch(fieldKey)} className="h-8 rounded border border-slate-300 px-2 text-xs" />
-              <input placeholder={yKey} value={point[yKey] ?? ""} onChange={(event) => props.onChange(points.map((item, itemIndex) => itemIndex === index ? { ...item, [yKey]: event.target.value } : item))} onBlur={() => props.onTouch(fieldKey)} className="h-8 rounded border border-slate-300 px-2 text-xs" />
-              <button type="button" onClick={() => props.onChange(points.filter((_, itemIndex) => itemIndex !== index))} className="rounded border border-slate-300 px-2 text-xs">Remove</button>
+              <input
+                placeholder="Flow"
+                value={point.flow}
+                onChange={(event) =>
+                  props.onChange(
+                    points.map((item, itemIndex) =>
+                      itemIndex === index
+                        ? { ...item, flow: event.target.value }
+                        : item,
+                    ),
+                  )
+                }
+                onBlur={() => props.onTouch(fieldKey)}
+                className="h-8 rounded border border-slate-300 px-2 text-xs"
+              />
+              <input
+                placeholder={yKey}
+                value={point[yKey] ?? ""}
+                onChange={(event) =>
+                  props.onChange(
+                    points.map((item, itemIndex) =>
+                      itemIndex === index
+                        ? { ...item, [yKey]: event.target.value }
+                        : item,
+                    ),
+                  )
+                }
+                onBlur={() => props.onTouch(fieldKey)}
+                className="h-8 rounded border border-slate-300 px-2 text-xs"
+              />
+              <button
+                type="button"
+                onClick={() =>
+                  props.onChange(
+                    points.filter((_, itemIndex) => itemIndex !== index),
+                  )
+                }
+                className="rounded border border-slate-300 px-2 text-xs"
+              >
+                Remove
+              </button>
             </div>
           ))}
         </div>
         <CurvePreview points={points} yKey={yKey} />
-        {showError && <p className="mt-1 text-xs text-red-600">{props.error}</p>}
+        {showError && (
+          <p className="mt-1 text-xs text-red-600">{props.error}</p>
+        )}
       </div>
     );
   }
   return (
     <label className="block">
-      <span className="text-xs font-medium text-slate-500">{props.field.label}{props.field.unit ? ` (${props.field.unit})` : ""}</span>
+      <span className="text-xs font-medium text-slate-500">
+        {props.field.label}
+        {props.field.unit ? ` (${props.field.unit})` : ""}
+      </span>
       <input
         type={props.field.kind === "number" ? "number" : "text"}
-        value={typeof props.value === "string" || typeof props.value === "number" ? props.value : ""}
+        value={
+          typeof props.value === "string" || typeof props.value === "number"
+            ? props.value
+            : ""
+        }
         onBlur={() => props.onTouch(fieldKey)}
         onChange={(event) => props.onChange(event.target.value)}
         className="mt-1 h-9 w-full rounded border border-slate-300 px-2 text-sm"
@@ -1358,15 +2103,33 @@ function FieldControl(props: {
   );
 }
 
-function CurvePreview({ points, yKey }: { points: CurvePoint[]; yKey: "head" | "headloss" }) {
+function CurvePreview({
+  points,
+  yKey,
+}: {
+  points: CurvePoint[];
+  yKey: "head" | "headloss";
+}) {
   const parsed = points
     .map((point) => ({ x: Number(point.flow), y: Number(point[yKey]) }))
     .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
-  if (parsed.length < 2) return <div className="mt-2 h-20 rounded border border-dashed border-slate-300 bg-slate-50" />;
+  if (parsed.length < 2)
+    return (
+      <div className="mt-2 h-20 rounded border border-dashed border-slate-300 bg-slate-50" />
+    );
   const maxX = Math.max(...parsed.map((point) => point.x), 1);
   const maxY = Math.max(...parsed.map((point) => point.y), 1);
-  const d = parsed.map((point, index) => `${index === 0 ? "M" : "L"} ${(point.x / maxX) * 140 + 10} ${70 - (point.y / maxY) * 60}`).join(" ");
-  return <svg className="mt-2 h-20 w-full rounded border border-slate-200 bg-slate-50"><path d={d} fill="none" stroke="#0f766e" strokeWidth="2" /></svg>;
+  const d = parsed
+    .map(
+      (point, index) =>
+        `${index === 0 ? "M" : "L"} ${(point.x / maxX) * 140 + 10} ${70 - (point.y / maxY) * 60}`,
+    )
+    .join(" ");
+  return (
+    <svg className="mt-2 h-20 w-full rounded border border-slate-200 bg-slate-50">
+      <path d={d} fill="none" stroke="#0f766e" strokeWidth="2" />
+    </svg>
+  );
 }
 
 function EmptyProperties({ selectionCount }: { selectionCount: number }) {
@@ -1374,15 +2137,30 @@ function EmptyProperties({ selectionCount }: { selectionCount: number }) {
     <section className="rounded border border-dashed border-slate-300 bg-slate-50 p-4">
       <h2 className="text-sm font-semibold text-slate-900">Selection</h2>
       <p className="mt-2 text-sm leading-6 text-slate-600">
-        {selectionCount === 0 ? "Select an element to edit its Section 3 input parameters." : "Multiple elements selected. Move, copy, delete, or use a single selection for properties."}
+        {selectionCount === 0
+          ? "Select an element to edit its Section 3 input parameters."
+          : "Multiple elements selected. Move, copy, delete, or use a single selection for properties."}
       </p>
     </section>
   );
 }
 
-function ToolbarButton({ label, disabled = false, onClick }: { label: string; disabled?: boolean; onClick?: () => void }) {
+function ToolbarButton({
+  label,
+  disabled = false,
+  onClick,
+}: {
+  label: string;
+  disabled?: boolean;
+  onClick?: () => void;
+}) {
   return (
-    <button type="button" disabled={disabled} onClick={onClick} className="h-8 rounded border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 shadow-sm transition hover:border-cyan-700 hover:text-cyan-800 focus-visible:outline focus-visible:outline-offset-2 focus-visible:outline-cyan-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 disabled:shadow-none">
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className="h-8 rounded border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 shadow-sm transition hover:border-cyan-700 hover:text-cyan-800 focus-visible:outline focus-visible:outline-offset-2 focus-visible:outline-cyan-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 disabled:shadow-none"
+    >
       {label}
     </button>
   );
@@ -1397,63 +2175,148 @@ function PanelHeader({ title, detail }: { title: string; detail: string }) {
   );
 }
 
-function fieldsForType(type: NodeType | LinkType, params: InputParams): FieldDef[] {
+function fieldsForType(
+  type: NodeType | LinkType,
+  params: InputParams,
+): FieldDef[] {
   // This is the frontend mirror of SRS Section 3.1. The backend validates the
   // same concepts before persistence.
-  if (type === "JUNCTION") return [
-    { key: "elevation", label: "Elevation", kind: "number", unit: "m" },
-    { key: "base_demand", label: "Base Demand", kind: "number", unit: "L/s" },
-    { key: "demand_pattern", label: "Demand Pattern", kind: "text" },
-  ];
-  if (type === "RESERVOIR") return [{ key: "total_head", label: "Total Head / Elevation", kind: "number", unit: "m" }];
-  if (type === "TANK") return [
-    { key: "elevation", label: "Elevation", kind: "number", unit: "m" },
-    { key: "diameter", label: "Diameter", kind: "number", unit: "m" },
-    { key: "min_level", label: "Min Level", kind: "number", unit: "m" },
-    { key: "max_level", label: "Max Level", kind: "number", unit: "m" },
-    { key: "initial_level", label: "Initial Level", kind: "number", unit: "m" },
-  ];
-  if (type === "PIPE") return [
-    { key: "length", label: "Length", kind: "number", unit: "m" },
-    { key: "diameter", label: "Diameter", kind: "number", unit: "mm" },
-    { key: "roughness", label: "Roughness C-factor", kind: "number" },
-    { key: "minor_loss_coeff", label: "Minor Loss Coefficient", kind: "number" },
-    { key: "status", label: "Status", kind: "select", options: ["OPEN", "CLOSED"] },
-  ];
-  if (type === "PUMP") return [
-    { key: "rated_power", label: "Rated Power", kind: "number", unit: "kW" },
-    { key: "speed", label: "Speed", kind: "number" },
-    { key: "status", label: "Status", kind: "select", options: ["ON", "OFF"] },
-    { key: "pump_curve", label: "Pump Curve", kind: "curve", yKey: "head" },
-  ];
+  if (type === "JUNCTION")
+    return [
+      { key: "elevation", label: "Elevation", kind: "number", unit: "m" },
+      { key: "base_demand", label: "Base Demand", kind: "number", unit: "L/s" },
+      { key: "demand_pattern", label: "Demand Pattern", kind: "text" },
+    ];
+  if (type === "RESERVOIR")
+    return [
+      {
+        key: "total_head",
+        label: "Total Head / Elevation",
+        kind: "number",
+        unit: "m",
+      },
+    ];
+  if (type === "TANK")
+    return [
+      { key: "elevation", label: "Elevation", kind: "number", unit: "m" },
+      { key: "diameter", label: "Diameter", kind: "number", unit: "m" },
+      { key: "min_level", label: "Min Level", kind: "number", unit: "m" },
+      { key: "max_level", label: "Max Level", kind: "number", unit: "m" },
+      {
+        key: "initial_level",
+        label: "Initial Level",
+        kind: "number",
+        unit: "m",
+      },
+    ];
+  if (type === "PIPE")
+    return [
+      { key: "length", label: "Length", kind: "number", unit: "m" },
+      { key: "diameter", label: "Diameter", kind: "number", unit: "mm" },
+      { key: "roughness", label: "Roughness C-factor", kind: "number" },
+      {
+        key: "minor_loss_coeff",
+        label: "Minor Loss Coefficient",
+        kind: "number",
+      },
+      {
+        key: "status",
+        label: "Status",
+        kind: "select",
+        options: ["OPEN", "CLOSED"],
+      },
+    ];
+  if (type === "PUMP")
+    return [
+      { key: "rated_power", label: "Rated Power", kind: "number", unit: "kW" },
+      { key: "speed", label: "Speed", kind: "number" },
+      {
+        key: "status",
+        label: "Status",
+        kind: "select",
+        options: ["ON", "OFF"],
+      },
+      { key: "pump_curve", label: "Pump Curve", kind: "curve", yKey: "head" },
+    ];
   if (type === "VALVE") {
     const valveType = params.valve_type;
     return [
-      { key: "valve_type", label: "Valve Type", kind: "select", options: ["PRV", "PSV", "PBV", "FCV", "TCV", "GPV"] },
+      {
+        key: "valve_type",
+        label: "Valve Type",
+        kind: "select",
+        options: ["PRV", "PSV", "PBV", "FCV", "TCV", "GPV"],
+      },
       { key: "diameter", label: "Diameter", kind: "number", unit: "mm" },
       valveType === "GPV"
-        ? { key: "gpv_curve", label: "GPV Headloss Curve", kind: "curve", yKey: "headloss" }
+        ? {
+            key: "gpv_curve",
+            label: "GPV Headloss Curve",
+            kind: "curve",
+            yKey: "headloss",
+          }
         : { key: "valve_setting", label: "Setting", kind: "number" },
-      { key: "status", label: "Status", kind: "select", options: ["OPEN", "CLOSED", "ACTIVE"] },
+      {
+        key: "status",
+        label: "Status",
+        kind: "select",
+        options: ["OPEN", "CLOSED", "ACTIVE"],
+      },
     ];
   }
   return [
-    { key: "mesh_size", label: "Mesh / Screen Size", kind: "number", unit: "mm" },
-    { key: "minor_loss_coeff", label: "Minor Loss Coefficient", kind: "number" },
-    { key: "filter_status", label: "Strainer / Filter Status", kind: "select", options: ["CLEAN", "PARTIALLY_CLOGGED", "CLOGGED"] },
+    {
+      key: "mesh_size",
+      label: "Mesh / Screen Size",
+      kind: "number",
+      unit: "mm",
+    },
+    {
+      key: "minor_loss_coeff",
+      label: "Minor Loss Coefficient",
+      kind: "number",
+    },
+    {
+      key: "filter_status",
+      label: "Strainer / Filter Status",
+      kind: "select",
+      options: ["CLEAN", "PARTIALLY_CLOGGED", "CLOGGED"],
+    },
   ];
 }
 
 function defaultNodeParams(type: NodeType): InputParams {
-  if (type === "JUNCTION") return { elevation: "", base_demand: "", demand_pattern: "" };
+  if (type === "JUNCTION")
+    return { elevation: "", base_demand: "", demand_pattern: "" };
   if (type === "RESERVOIR") return { total_head: "" };
-  return { elevation: "", diameter: "", min_level: "", max_level: "", initial_level: "" };
+  return {
+    elevation: "",
+    diameter: "",
+    min_level: "",
+    max_level: "",
+    initial_level: "",
+  };
 }
 
 function defaultLinkParams(type: LinkType): InputParams {
-  if (type === "PIPE") return { length: "", diameter: "", roughness: "", minor_loss_coeff: "", status: "" };
-  if (type === "PUMP") return { rated_power: "", speed: "", status: "", pump_curve: [] };
-  if (type === "VALVE") return { valve_type: "", diameter: "", valve_setting: "", status: "", gpv_curve: [] };
+  if (type === "PIPE")
+    return {
+      length: "",
+      diameter: "",
+      roughness: "",
+      minor_loss_coeff: "",
+      status: "",
+    };
+  if (type === "PUMP")
+    return { rated_power: "", speed: "", status: "", pump_curve: [] };
+  if (type === "VALVE")
+    return {
+      valve_type: "",
+      diameter: "",
+      valve_setting: "",
+      status: "",
+      gpv_curve: [],
+    };
   return { mesh_size: "", minor_loss_coeff: "", filter_status: "" };
 }
 
@@ -1464,19 +2327,38 @@ function defaultNodeComputed(type: NodeType): ComputedValues {
 }
 
 function defaultLinkComputed(type: LinkType): ComputedValues {
-  if (type === "PIPE") return { flow_rate: null, velocity: null, headloss: null, unit_headloss: null };
+  if (type === "PIPE")
+    return {
+      flow_rate: null,
+      velocity: null,
+      headloss: null,
+      unit_headloss: null,
+    };
   if (type === "PUMP") return { flow: null, head_added: null, energy: null };
   if (type === "VALVE") return { flow: null, pressure_drop: null };
   return { headloss: null };
 }
 
 function computedForType(type: NodeType | LinkType): ComputedValues {
-  return isNodeTool(type) ? defaultNodeComputed(type) : defaultLinkComputed(type);
+  return isNodeTool(type)
+    ? defaultNodeComputed(type)
+    : defaultLinkComputed(type);
 }
 
 function nextLabel(type: ToolType, model: SchematicModel): string {
-  const prefix: Record<ToolType, string> = { JUNCTION: "J", RESERVOIR: "R", TANK: "T", PIPE: "P", PUMP: "PU", VALVE: "V", FILTER: "F" };
-  const labels = [...model.nodes.map((node) => node.label), ...model.links.map((link) => link.label)];
+  const prefix: Record<ToolType, string> = {
+    JUNCTION: "J",
+    RESERVOIR: "R",
+    TANK: "T",
+    PIPE: "P",
+    PUMP: "PU",
+    VALVE: "V",
+    FILTER: "F",
+  };
+  const labels = [
+    ...model.nodes.map((node) => node.label),
+    ...model.links.map((link) => link.label),
+  ];
   let index = 1;
   while (labels.includes(`${prefix[type]}-${index}`)) index += 1;
   return `${prefix[type]}-${index}`;
@@ -1488,7 +2370,13 @@ function validateModel(model: SchematicModel): Record<string, string> {
   const errors: Record<string, string> = {};
   for (const node of model.nodes) {
     for (const field of fieldsForType(node.type, node.input_params)) {
-      if (field.kind !== "curve") validateField(`${node.id}.${field.key}`, field, node.input_params[field.key], errors);
+      if (field.kind !== "curve")
+        validateField(
+          `${node.id}.${field.key}`,
+          field,
+          node.input_params[field.key],
+          errors,
+        );
     }
     if (node.type === "TANK") {
       const tankError = validateTankLevels(node.input_params);
@@ -1496,15 +2384,26 @@ function validateModel(model: SchematicModel): Record<string, string> {
     }
   }
   for (const link of model.links) {
-    if (!link.from_node_id || !link.to_node_id) errors[`${link.id}.endpoints`] = "Both endpoints must be connected.";
+    if (!link.from_node_id || !link.to_node_id)
+      errors[`${link.id}.endpoints`] = "Both endpoints must be connected.";
     for (const field of fieldsForType(link.type, link.input_params)) {
-      validateField(`${link.id}.${field.key}`, field, link.input_params[field.key], errors);
+      validateField(
+        `${link.id}.${field.key}`,
+        field,
+        link.input_params[field.key],
+        errors,
+      );
     }
   }
   return errors;
 }
 
-function validateField(path: string, field: FieldDef, value: FieldValue, errors: Record<string, string>) {
+function validateField(
+  path: string,
+  field: FieldDef,
+  value: FieldValue,
+  errors: Record<string, string>,
+) {
   const error = validateFieldValue(field, value);
   if (error) errors[path] = error;
 }
@@ -1512,12 +2411,20 @@ function validateField(path: string, field: FieldDef, value: FieldValue, errors:
 function toApiPayload(model: SchematicModel) {
   return {
     ...model,
-    nodes: model.nodes.map((node) => ({ ...node, input_params: normalizeParams(node.input_params) })),
-    links: model.links.map((link) => ({ ...link, input_params: normalizeParams(link.input_params) })),
+    nodes: model.nodes.map((node) => ({
+      ...node,
+      input_params: normalizeParams(node.input_params),
+    })),
+    links: model.links.map((link) => ({
+      ...link,
+      input_params: normalizeParams(link.input_params),
+    })),
   };
 }
 
-function fromApiPayload(payload: SchematicModel & { id?: string }): SchematicModel {
+function fromApiPayload(
+  payload: SchematicModel & { id?: string },
+): SchematicModel {
   return {
     ...defaultModel(),
     ...payload,
@@ -1527,15 +2434,43 @@ function fromApiPayload(payload: SchematicModel & { id?: string }): SchematicMod
   };
 }
 
+function formatSchematicError(error: unknown, fallback: string) {
+  if (error instanceof SchematicApiError) {
+    return `${fallback}: ${error.message}`;
+  }
+  if (error instanceof TypeError) {
+    return `${fallback}: backend API is unreachable`;
+  }
+  if (error instanceof Error && error.message) {
+    return `${fallback}: ${error.message}`;
+  }
+  return fallback;
+}
+
 function normalizeParams(params: InputParams): InputParams {
   // Form inputs stay as strings for editing. API payloads convert numeric-looking
   // values so backend validation receives numbers instead of DOM strings.
   return Object.fromEntries(
     Object.entries(params).map(([key, value]) => {
       if (Array.isArray(value)) {
-        return [key, value.map((point) => Object.fromEntries(Object.entries(point).map(([pointKey, pointValue]) => [pointKey, pointValue === "" ? undefined : Number(pointValue)])))];
+        return [
+          key,
+          value.map((point) =>
+            Object.fromEntries(
+              Object.entries(point).map(([pointKey, pointValue]) => [
+                pointKey,
+                pointValue === "" ? undefined : Number(pointValue),
+              ]),
+            ),
+          ),
+        ];
       }
-      if (typeof value === "string" && value !== "" && Number.isFinite(Number(value))) return [key, Number(value)];
+      if (
+        typeof value === "string" &&
+        value !== "" &&
+        Number.isFinite(Number(value))
+      )
+        return [key, Number(value)];
       return [key, value];
     }),
   );
@@ -1545,13 +2480,27 @@ function updateLinkPointsForNodes(links: BuilderLink[], nodes: BuilderNode[]) {
   return links.map((link) => {
     const from = nodes.find((node) => node.id === link.from_node_id);
     const to = nodes.find((node) => node.id === link.to_node_id);
-    return from && to ? { ...link, points: [{ x: from.x, y: from.y }, { x: to.x, y: to.y }] } : link;
+    return from && to
+      ? {
+          ...link,
+          points: [
+            { x: from.x, y: from.y },
+            { x: to.x, y: to.y },
+          ],
+        }
+      : link;
   });
 }
 
 function toggleSelection(selection: Selection[], item: Selection) {
-  const exists = selection.some((selected) => selected.kind === item.kind && selected.id === item.id);
-  return exists ? selection.filter((selected) => !(selected.kind === item.kind && selected.id === item.id)) : [...selection, item];
+  const exists = selection.some(
+    (selected) => selected.kind === item.kind && selected.id === item.id,
+  );
+  return exists
+    ? selection.filter(
+        (selected) => !(selected.kind === item.kind && selected.id === item.id),
+      )
+    : [...selection, item];
 }
 
 function normalizeBox(start: Point, current: Point) {

@@ -11,58 +11,134 @@ type StoredSchematic = Record<string, unknown> & {
   created_at?: string;
 };
 
-const LIBRARY_KEY = "audrolics.builder.localLibrary";
-const libraryKey = (userId: string) => `${LIBRARY_KEY}.${userId || "dev-user"}`;
+type ApiErrorDetail =
+  | string
+  | {
+      error_code?: string;
+      message?: string;
+    }
+  | Array<{
+      msg?: string;
+      loc?: unknown[];
+    }>;
 
-const readLibrary = (userId: string): StoredSchematic[] => {
-  if (typeof window === "undefined") return [];
-  const raw = window.localStorage.getItem(libraryKey(userId));
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    window.localStorage.removeItem(libraryKey(userId));
-    return [];
+export class SchematicApiError extends Error {
+  status: number;
+  detail: ApiErrorDetail | undefined;
+
+  constructor(status: number, detail: ApiErrorDetail | undefined) {
+    super(formatApiError(status, detail));
+    this.name = "SchematicApiError";
+    this.status = status;
+    this.detail = detail;
   }
-};
+}
 
-const writeLibrary = (userId: string, schematics: StoredSchematic[]) => {
-  window.localStorage.setItem(libraryKey(userId), JSON.stringify(schematics));
+const SCHEMATICS_PATH = "/api/v1/schematics";
+const SERVER_MANAGED_FIELDS = new Set(["id", "user_id", "created_at", "updated_at"]);
+
+const requestJson = async <T>(path: string, userId: string, init: RequestInit = {}): Promise<T> => {
+  const response = await fetch(path, {
+    ...init,
+    headers: {
+      ...(init.body ? { "Content-Type": "application/json" } : {}),
+      "X-User-Id": userId || "dev-user",
+      ...init.headers,
+    },
+  });
+
+  if (response.status === 204) return undefined as T;
+
+  const body = await readResponseBody(response);
+  if (!response.ok) {
+    throw new SchematicApiError(response.status, extractDetail(body));
+  }
+  return body as T;
 };
 
 export const listSchematics = async (userId = "dev-user"): Promise<StoredSchematicSummary[]> =>
-  readLibrary(userId)
-    .map(({ id, name, updated_at }) => ({ id, name, updated_at }))
-    .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  requestJson<StoredSchematicSummary[]>(SCHEMATICS_PATH, userId);
 
-export const saveSchematic = async <T extends Record<string, unknown>>(userId: string, model: T): Promise<T & StoredSchematic> => {
-  const now = new Date().toISOString();
-  const existingId = typeof model.id === "string" ? model.id : undefined;
-  const saved = {
-    ...model,
-    id: existingId ?? `local-${crypto.randomUUID()}`,
-    name: typeof model.name === "string" && model.name.trim() ? model.name : "Untitled schematic",
-    created_at: typeof model.created_at === "string" ? model.created_at : now,
-    updated_at: now,
-  } as T & StoredSchematic;
-  const next = [saved, ...readLibrary(userId).filter((schematic) => schematic.id !== saved.id)];
-  writeLibrary(userId, next);
+export const saveSchematic = async <T extends Record<string, unknown>>(
+  userId: string,
+  model: T,
+): Promise<T & StoredSchematic> => {
+  const existingId = getPersistedSchematicId(model);
+  const saved = existingId
+    ? await requestJson<T & StoredSchematic>(`${SCHEMATICS_PATH}/${encodeURIComponent(existingId)}`, userId, {
+        method: "PUT",
+        body: JSON.stringify(stripServerManagedFields(model)),
+      })
+    : await requestJson<T & StoredSchematic>(SCHEMATICS_PATH, userId, {
+        method: "POST",
+        body: JSON.stringify(stripServerManagedFields(model)),
+      });
+
   return saved;
 };
 
 export const loadSchematic = async <T>(userId: string, schematicId: string): Promise<T | null> => {
-  const schematic = readLibrary(userId).find((item) => item.id === schematicId);
-  return schematic ? (structuredClone(schematic) as T) : null;
+  try {
+    return await requestJson<T>(`${SCHEMATICS_PATH}/${encodeURIComponent(schematicId)}`, userId);
+  } catch (error) {
+    if (error instanceof SchematicApiError && error.status === 404) return null;
+    throw error;
+  }
 };
 
 export const deleteSchematic = async (userId: string, schematicId: string): Promise<boolean> => {
-  const current = readLibrary(userId);
-  const next = current.filter((schematic) => schematic.id !== schematicId);
-  writeLibrary(userId, next);
-  return next.length !== current.length;
+  try {
+    await requestJson<void>(`${SCHEMATICS_PATH}/${encodeURIComponent(schematicId)}`, userId, {
+      method: "DELETE",
+    });
+    return true;
+  } catch (error) {
+    if (error instanceof SchematicApiError && error.status === 404) return false;
+    throw error;
+  }
 };
 
-export const clearLocalSchematicLibrary = (userId = "dev-user") => {
-  if (typeof window !== "undefined") window.localStorage.removeItem(libraryKey(userId));
+export const clearLocalSchematicLibrary = () => {
+  // Kept as a no-op compatibility hook for older tests and manual browser cleanup.
+  // Schematics now persist through the backend repository/database.
+};
+
+const getPersistedSchematicId = (model: Record<string, unknown>): string | null => {
+  if (typeof model.id !== "string") return null;
+  return typeof model.created_at === "string" || typeof model.updated_at === "string" ? model.id : null;
+};
+
+const stripServerManagedFields = (model: Record<string, unknown>): Record<string, unknown> =>
+  Object.fromEntries(Object.entries(model).filter(([key]) => !SERVER_MANAGED_FIELDS.has(key)));
+
+const readResponseBody = async (response: Response): Promise<unknown> => {
+  const text = await response.text();
+  if (!text) return undefined;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+};
+
+const extractDetail = (body: unknown): ApiErrorDetail | undefined => {
+  if (body && typeof body === "object" && "detail" in body) {
+    return (body as { detail?: ApiErrorDetail }).detail;
+  }
+  return typeof body === "string" ? body : undefined;
+};
+
+const formatApiError = (status: number, detail: ApiErrorDetail | undefined): string => {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const message = detail
+      .map((item) => item.msg)
+      .filter(Boolean)
+      .join("; ");
+    if (message) return message;
+  }
+  if (detail && !Array.isArray(detail) && typeof detail !== "string" && detail.message) {
+    return detail.message;
+  }
+  return `Schematic API request failed with status ${status}.`;
 };
