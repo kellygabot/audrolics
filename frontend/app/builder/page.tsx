@@ -2303,9 +2303,9 @@ function defaultLinkParams(type: LinkType): InputParams {
     return {
       length: "",
       diameter: "",
-      roughness: "",
-      minor_loss_coeff: "",
-      status: "",
+      roughness: 140,
+      minor_loss_coeff: 0,
+      status: "OPEN",
     };
   if (type === "PUMP")
     return { rated_power: "", speed: "", status: "", pump_curve: [] };
