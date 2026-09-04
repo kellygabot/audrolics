@@ -163,7 +163,7 @@ export default function AuthModal({
           {mode === "login" ? (
             /* --- LOGIN GRADIENT INFO --- */
             <>
-              <Image src="/ru-new.svg" alt="Graphic" width={240} height={240} className="mt-[-45px] mb-[-45px] relative z-10" />
+              <Image src="/ru-new.svg" alt="Graphic" width={400} height={400} className="mt-[-90px] mb-[-90px] relative z-10" />
               <p className="text-[0.65rem] font-extrabold uppercase tracking-widest text-white/90 mb-2">
                 MAKE IT YOURS
               </p>
@@ -184,7 +184,7 @@ export default function AuthModal({
           ) : (
             /* --- SIGNUP GRADIENT INFO --- */
             <>
-              <Image src="/alr.svg" alt="Graphic" width={240} height={240} className="m-[-45px] relative z-10" />
+              <Image src="/alr.svg" alt="Graphic" width={400} height={400} className="m-[-90px] relative z-10" />
               <p className="text-[0.65rem] font-extrabold uppercase tracking-widest text-white/90 mb-2">
                 GOOD TO HAVE YOU BACK
               </p>
