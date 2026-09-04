@@ -1,23 +1,23 @@
-'use client';
+"use client";
 
 import { useState } from "react";
 import AuthModal from "@/components/auth/page";
 import Header from "@/components/header/page";
-import LandingPage from "@/components/landing/page";  
+import LandingPage from "@/components/landing/page";
 
-type authMode = 'login' | 'signup';
+type AuthMode = "login" | "signup";
 
 export default function Home() {
-  const [authMode, setAuthMode] = useState<authMode | null>(null);
+  const [authMode, setAuthMode] = useState<AuthMode | null>(null);
 
   return (
-    <div >
+    <div>
       <main>
         <Header onOpenAuth={setAuthMode} />
         <LandingPage />
       </main>
       {authMode ? (
-        <AuthModal 
+        <AuthModal
           mode={authMode}
           onClose={() => setAuthMode(null)}
           onSwitchMode={setAuthMode}

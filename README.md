@@ -43,28 +43,14 @@ Audrolics models a water network as a graph:
 - Nodes: junctions, reservoirs, and tanks.
 - Links: pipes, pumps, valves, and strainers/filters.
 
-The frontend owns the interactive schematic-building experience. The backend owns validation, simulation, anomaly localization, persistence, audit logging, and authentication APIs.
+The frontend owns the interactive schematic-building experience. The backend owns validation, persistence, and the API boundary for future simulation, anomaly localization, audit logging, and authentication work.
 
 ```text
 audrolics/
-├── backend/                  # FastAPI/FARM backend service
-│   ├── src/backend/
-│   │   ├── api/              # API routers and route controllers
-│   │   ├── engine/           # Solver-facing input models and future calculation modules
-│   │   ├── repositories/     # Persistence layer; MongoDB or in-memory fallback
-│   │   ├── schemas/          # Pydantic request/response schemas and validation
-│   │   ├── services/         # Currently empty placeholder for future workflows
-│   │   ├── config.py         # Reserved runtime configuration module
-│   │   ├── database.py       # Loads env and chooses MongoDB vs in-memory repository
-│   │   └── main.py           # FastAPI app entrypoint
-│   ├── pyproject.toml
-│   ├── requirements.txt
-│   ├── sample.env
-│   └── uv.lock
-├── mern-backend/             # Express/Mongoose backend for MERN-stack delivery
+├── backend/                  # Node.js/Express/Mongoose backend service
 │   ├── src/
-│   │   ├── app.ts            # Express app and shared route mounting
-│   │   ├── server.ts         # Mongo connection and HTTP server startup
+│   │   ├── app.ts            # Express app, middleware, health route, and API mounting
+│   │   ├── server.ts         # MongoDB connection and HTTP server startup
 │   │   ├── config/           # dotenv, port, CORS, and MongoDB configuration
 │   │   ├── models/           # Mongoose models
 │   │   ├── repositories/     # MongoDB CRUD access layer
@@ -87,16 +73,16 @@ audrolics/
 
 `builder-storage.ts` is now a frontend API client, despite the old name. It no longer stores the main schematic library in browser `localStorage`; `localStorage` is only used for recovery drafts.
 
-The professor-required MERN path is:
+The required JavaScript backend path is now the only active backend path:
 
 ```text
 MongoDB
-  -> Express/Mongoose backend in mern-backend/
+  -> Express/Mongoose backend in backend/
   -> React/Next.js frontend in frontend/
   -> Node.js runtime
 ```
 
-The FastAPI/FARM backend remains available for Python solver work. Both backends should keep the same `/api/v1` HTTP contract so the frontend can switch between them by changing `BACKEND_API_BASE_URL` or `NEXT_PUBLIC_API_BASE_URL`.
+The old FastAPI/FARM backend is no longer part of the active working tree. If Python solver experiments are needed later, keep them in a separate folder or notebook and call them through an explicit API boundary instead of mixing them into the Express/Mongoose service.
 
 ## Planned Core Workflows
 
@@ -226,7 +212,7 @@ Standard errors use `{ error_code, message, element_id?, attribute? }`. Preserve
 
 Current implementation status:
 
-- Implemented in both FastAPI/FARM and Express/MERN: `GET /api/v1/schematics`, `POST /api/v1/schematics`, `GET /api/v1/schematics/{id}`, `PUT /api/v1/schematics/{id}`, and `DELETE /api/v1/schematics/{id}`.
+- Implemented in the Node.js/Express/Mongoose backend: `GET /api/v1/schematics`, `POST /api/v1/schematics`, `GET /api/v1/schematics/{id}`, `PUT /api/v1/schematics/{id}`, and `DELETE /api/v1/schematics/{id}`.
 - Temporary ownership is handled by the `X-User-Id` header until authentication is implemented.
 - Backend validation is authoritative for saved schematic payloads.
 - Simulation, anomaly detection, authentication, audit logging, and export API routes are still planned work.
@@ -276,10 +262,9 @@ Anomaly tests must cover known leak localization, blockage localization, insuffi
 ## Tech Stack
 
 - Frontend: Next.js, React, TypeScript, Tailwind CSS
-- Professor-required backend/API: Node.js, Express, Mongoose
-- Solver-friendly backend/API kept in parallel: FastAPI, Python
+- Backend/API: Node.js, Express, Mongoose
 - Database: MongoDB
-- Backend package management: `npm` for MERN, `uv` for FastAPI/FARM
+- Backend package management: `npm`
 - Planned hosting: Vercel for frontend, Render for backend
 - Future ML experiments: Modal
 
@@ -287,35 +272,25 @@ Anomaly tests must cover known leak localization, blockage localization, insuffi
 
 ### Backend
 
-MERN backend:
-
 ```bash
-cd mern-backend
+cd backend
 npm install
 cp sample.env .env
 npm run dev
 ```
 
-FastAPI/FARM backend:
+The API should be available at `http://localhost:8000`.
 
-```bash
-cd backend
-uv sync
-cp sample.env .env
-uv run uvicorn backend.main:app --reload --env-file .env
-```
-
-The API should be available at `http://localhost:8000`. FastAPI documentation is available at `http://localhost:8000/docs` only when the FastAPI backend is running.
-
-For MongoDB persistence, the active backend's `.env` must include a real `MONGODB_URI`:
+For MongoDB persistence, `backend/.env` must include a real `MONGODB_URI`:
 
 ```env
-MONGODB_USERNAME=your_username
-MONGODB_PASSWORD=your_password
+PORT=8000
 MONGODB_URI=mongodb+srv://your_username:your_password@your-cluster.mongodb.net/
+MONGODB_DATABASE=audrolics
+FRONTEND_ORIGINS=http://localhost:3000,http://localhost:3001
 ```
 
-`MONGODB_USERNAME` and `MONGODB_PASSWORD` are only helper values for humans. The backends read `MONGODB_URI` directly. If `MONGODB_URI` is missing or left as `{URI}`, the FastAPI backend falls back to memory, while the MERN backend refuses to start.
+`MONGODB_URI` is required. If it is missing or left as `{URI}`, the backend refuses to start instead of falling back to in-memory persistence.
 
 The optional `MONGODB_DATABASE` env var can override the database name. If omitted, the backend uses:
 
@@ -324,7 +299,14 @@ database: audrolics
 collection: schematics
 ```
 
-The backend also defensively loads `.env` from `backend/.env` or the project root `.env` before choosing the repository, but using `--env-file .env` keeps startup explicit.
+Run backend checks with:
+
+```bash
+cd backend
+npm run typecheck
+npm test
+npm run build
+```
 
 ### Frontend
 

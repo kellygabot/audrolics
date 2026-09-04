@@ -27,8 +27,7 @@ const schematicSchema = new mongoose.Schema(
 schematicSchema.index({ user_id: 1, updated_at: -1 });
 schematicSchema.index({ id: 1, user_id: 1 }, { unique: true });
 
-// This Mongoose model intentionally stores the same document shape as the
-// FastAPI repository. That lets the Next.js builder switch between the MERN and
-// FARM backends without changing its fetch paths or payload shape.
+// This Mongoose model intentionally stores the same document shape used by the
+// Next.js builder's schematic API contract.
 export const SchematicModel =
   mongoose.models.Schematic ?? mongoose.model("Schematic", schematicSchema);

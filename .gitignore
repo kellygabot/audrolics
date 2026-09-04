@@ -3,9 +3,9 @@ __pycache__/
 .venv/
 .pytest_cache/
 
-# MERN backend generated files
-mern-backend/node_modules/
-mern-backend/dist/
+# backend generated files
+backend/node_modules/
+backend/dist/
 
 # Environment variables
 .env
