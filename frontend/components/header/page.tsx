@@ -16,13 +16,13 @@ export default function Header({ onOpenAuth }: HeaderProps) {
       <div className="flex items-center gap-2 ml-auto">
         <button 
           onClick={() => onOpenAuth?.('signup')} 
-          className="text-l opacity-85 border-2 border-[#8a8a8a]/90 rounded-[.75rem] pt-[0.30rem] pb-2 px-4 mr-3 transition-colors hover:bg-black/5"
+          className="text-l opacity-85 border-2 border-[#8a8a8a]/90 rounded-xl pt-[0.30rem] pb-2 px-4 mr-3 transition-colors hover:bg-black/5"
         >
           Sign up
         </button>
         <button 
           onClick={() => onOpenAuth?.('login')} 
-          className="text-l text-white font-bold bg-[#021eef] rounded-[.75rem] pt-1.5 pb-2 px-4.5 mr-4 transition-colors hover:bg-[#021eef]/90"
+          className="text-l text-white font-bold bg-[#021eef] rounded-xl pt-1.5 pb-2 px-4.5 mr-4 transition-colors hover:bg-[#021eef]/90"
         >
           Log in
         </button>
