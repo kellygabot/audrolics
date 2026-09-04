@@ -13,6 +13,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Backend interchange point:
+# The MERN backend in mern-backend/ should expose the same /api/v1/schematics
+# contract. The Next.js frontend can switch between this FastAPI/FARM app and
+# the Express/MERN app by changing BACKEND_API_BASE_URL.
 app.include_router(schematics_router)
 
 @app.get("/")

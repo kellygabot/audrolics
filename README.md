@@ -47,7 +47,7 @@ The frontend owns the interactive schematic-building experience. The backend own
 
 ```text
 audrolics/
-├── backend/                  # FastAPI backend service
+├── backend/                  # FastAPI/FARM backend service
 │   ├── src/backend/
 │   │   ├── api/              # API routers and route controllers
 │   │   ├── engine/           # Solver-facing input models and future calculation modules
@@ -61,6 +61,20 @@ audrolics/
 │   ├── requirements.txt
 │   ├── sample.env
 │   └── uv.lock
+├── mern-backend/             # Express/Mongoose backend for MERN-stack delivery
+│   ├── src/
+│   │   ├── app.ts            # Express app and shared route mounting
+│   │   ├── server.ts         # Mongo connection and HTTP server startup
+│   │   ├── config/           # dotenv, port, CORS, and MongoDB configuration
+│   │   ├── models/           # Mongoose models
+│   │   ├── repositories/     # MongoDB CRUD access layer
+│   │   ├── routes/           # Express route handlers
+│   │   ├── schemas/          # Request normalization and validation
+│   │   └── utils/            # Shared errors and time helpers
+│   ├── tests/
+│   ├── package.json
+│   ├── sample.env
+│   └── tsconfig.json
 ├── frontend/                 # Next.js frontend application
 │   ├── app/                  # Next.js App Router pages
 │   ├── components/           # React component areas
@@ -72,6 +86,17 @@ audrolics/
 ```
 
 `builder-storage.ts` is now a frontend API client, despite the old name. It no longer stores the main schematic library in browser `localStorage`; `localStorage` is only used for recovery drafts.
+
+The professor-required MERN path is:
+
+```text
+MongoDB
+  -> Express/Mongoose backend in mern-backend/
+  -> React/Next.js frontend in frontend/
+  -> Node.js runtime
+```
+
+The FastAPI/FARM backend remains available for Python solver work. Both backends should keep the same `/api/v1` HTTP contract so the frontend can switch between them by changing `BACKEND_API_BASE_URL` or `NEXT_PUBLIC_API_BASE_URL`.
 
 ## Planned Core Workflows
 
@@ -199,6 +224,14 @@ Standard errors use `{ error_code, message, element_id?, attribute? }`. Preserve
 - `E300-E301`: anomaly localization warnings/failures.
 - `E400-E429`: auth, ownership, and rate-limit failures.
 
+Current implementation status:
+
+- Implemented in both FastAPI/FARM and Express/MERN: `GET /api/v1/schematics`, `POST /api/v1/schematics`, `GET /api/v1/schematics/{id}`, `PUT /api/v1/schematics/{id}`, and `DELETE /api/v1/schematics/{id}`.
+- Temporary ownership is handled by the `X-User-Id` header until authentication is implemented.
+- Backend validation is authoritative for saved schematic payloads.
+- Simulation, anomaly detection, authentication, audit logging, and export API routes are still planned work.
+- Computed fields exist in the saved data model as read-only placeholders until the solver is wired in.
+
 ## Units And Engineering Conventions
 
 Audrolics intentionally uses mixed field units at the UI/data-entry boundary.
@@ -243,15 +276,27 @@ Anomaly tests must cover known leak localization, blockage localization, insuffi
 ## Tech Stack
 
 - Frontend: Next.js, React, TypeScript, Tailwind CSS
-- Backend/API: FastAPI, Python
+- Professor-required backend/API: Node.js, Express, Mongoose
+- Solver-friendly backend/API kept in parallel: FastAPI, Python
 - Database: MongoDB
-- Backend package management: `uv`
+- Backend package management: `npm` for MERN, `uv` for FastAPI/FARM
 - Planned hosting: Vercel for frontend, Render for backend
 - Future ML experiments: Modal
 
 ## Getting Started
 
 ### Backend
+
+MERN backend:
+
+```bash
+cd mern-backend
+npm install
+cp sample.env .env
+npm run dev
+```
+
+FastAPI/FARM backend:
 
 ```bash
 cd backend
@@ -260,9 +305,9 @@ cp sample.env .env
 uv run uvicorn backend.main:app --reload --env-file .env
 ```
 
-The API should be available at `http://localhost:8000`. FastAPI documentation should be available at `http://localhost:8000/docs`.
+The API should be available at `http://localhost:8000`. FastAPI documentation is available at `http://localhost:8000/docs` only when the FastAPI backend is running.
 
-For MongoDB persistence, `backend/.env` must include a real `MONGODB_URI`:
+For MongoDB persistence, the active backend's `.env` must include a real `MONGODB_URI`:
 
 ```env
 MONGODB_USERNAME=your_username
@@ -270,7 +315,7 @@ MONGODB_PASSWORD=your_password
 MONGODB_URI=mongodb+srv://your_username:your_password@your-cluster.mongodb.net/
 ```
 
-`MONGODB_USERNAME` and `MONGODB_PASSWORD` are only helper values for humans. The backend reads `MONGODB_URI` directly. If `MONGODB_URI` is missing or left as `{URI}`, the backend saves schematics in memory and they disappear when the backend restarts.
+`MONGODB_USERNAME` and `MONGODB_PASSWORD` are only helper values for humans. The backends read `MONGODB_URI` directly. If `MONGODB_URI` is missing or left as `{URI}`, the FastAPI backend falls back to memory, while the MERN backend refuses to start.
 
 The optional `MONGODB_DATABASE` env var can override the database name. If omitted, the backend uses:
 
