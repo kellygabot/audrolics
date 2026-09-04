@@ -60,7 +60,7 @@ npm run build
 
 The builder persists schematics through the backend API. Client modules call same-origin
 paths such as `/api/v1/schematics`; `next.config.ts` rewrites those requests to the
-configured FastAPI backend.
+configured Express/Mongoose backend.
 
 Set the backend base URL with:
 

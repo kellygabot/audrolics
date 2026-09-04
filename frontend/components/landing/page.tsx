@@ -1,13 +1,14 @@
-export default function LandingPage() {
+import Image from "next/image";
 
+export default function LandingPage() {
   return (
     <main>
         <div className="relative overflow-hidden bg-linear-to-r from-[#2247c8] from-10% to-[#008ce6] flex flex-row items-center justify-center h-[89.5vh] w-[100vw]">
             <div className="w-200 h-200 absolute bg-white rounded-full -left-100 translate-y-[55%]"> 
-                <img src="/s-logo.svg" alt="Logo" className="h-80 w-80 absolute -right-[-45px] translate-y-[-5%]" />
+                <Image src="/s-logo.svg" alt="" width={320} height={320} aria-hidden="true" className="h-80 w-80 absolute -right-[-45px] translate-y-[-5%]" />
             </div>
             <div className="w-100 h-100 absolute bg-white rounded-full -right-60 translate-y-[-15%]"> 
-                <img src="/droplet.svg" alt="Logo" className="h-80 w-80 absolute -left-[125px] translate-y-[-5%]" />
+                <Image src="/droplet.svg" alt="" width={320} height={320} aria-hidden="true" className="h-80 w-80 absolute -left-[125px] translate-y-[-5%]" />
             </div>
             <div className="flex flex-col items-center justify-center">
                 <h1 className="text-[5rem] text-white mb-4 text-center font-poppins leading-tight -m-12">

@@ -38,9 +38,9 @@ const SCHEMATICS_PATH = "/api/v1/schematics";
 const SERVER_MANAGED_FIELDS = new Set(["id", "user_id", "created_at", "updated_at"]);
 
 const requestJson = async <T>(path: string, userId: string, init: RequestInit = {}): Promise<T> => {
-  // Backend interchange point:
-  // This client only depends on the shared HTTP contract. The server behind
-  // /api/v1/schematics can be FastAPI/FARM or Express/MERN.
+  // Backend boundary:
+  // This client only depends on the /api/v1/schematics HTTP contract. Next.js
+  // rewrites the same-origin request to the Express/Mongoose backend.
   const response = await fetch(path, {
     ...init,
     headers: {

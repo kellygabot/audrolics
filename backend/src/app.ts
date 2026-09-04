@@ -20,10 +20,9 @@ export const createApp = () => {
     response.json({ name: "Audrolics MERN API", status: "ok" });
   });
 
-  // Interchange point with the FastAPI/FARM backend:
-  // keep this mounted path and response shape equal to backend/src/backend/main.py.
-  // The Next.js frontend only needs BACKEND_API_BASE_URL to point at whichever
-  // backend implementation is running.
+  // Frontend contract:
+  // keep this mounted path stable because the Next.js builder rewrites
+  // same-origin /api/* requests to this Express backend.
   app.use("/api/v1/schematics", schematicsRouter);
 
   app.use(errorHandler);
