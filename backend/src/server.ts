@@ -7,7 +7,7 @@ const start = async () => {
 
   const app = createApp();
   app.listen(config.port, () => {
-    console.log(`Audrolics MERN API listening on http://127.0.0.1:${config.port}`);
+    console.log(`Audrolics API listening on http://127.0.0.1:${config.port}`);
   });
 };
 

@@ -17,7 +17,7 @@ export const createApp = () => {
   app.use(express.json({ limit: "2mb" }));
 
   app.get("/", (_request, response) => {
-    response.json({ name: "Audrolics MERN API", status: "ok" });
+    response.json({ name: "Audrolics API", status: "ok" });
   });
 
   // Frontend contract:

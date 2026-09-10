@@ -265,7 +265,7 @@ Anomaly tests must cover known leak localization, blockage localization, insuffi
 - Backend/API: Node.js, Express, Mongoose
 - Database: MongoDB
 - Backend package management: `npm`
-- Planned hosting: Vercel for frontend, Render for backend
+- Planned hosting: Vercel for frontend and backend
 - Future ML experiments: Modal
 
 ## Getting Started
