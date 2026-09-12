@@ -1,11 +1,11 @@
 # Audrolics Deployment Guide
 
-This guide describes how to deploy Audrolics with:
+This guide describes how to deploy Audrolics with both apps on Vercel:
 
-- Frontend: Next.js on Vercel
-- Backend: FastAPI on Render
+- Frontend: Next.js on Vercel from `frontend/`
+- Backend: Node.js/Express/Mongoose serverless functions on Vercel from `backend/`
 - Database: MongoDB Atlas
-- CI/CD: GitHub Actions for validation, Vercel automatic frontend deploys, and Render automatic backend deploys
+- CI/CD: GitHub Actions for validation and Vercel automatic deploys
 
 The commands assume the repository root is `audrolics/`.
 
@@ -16,154 +16,169 @@ Install these tools locally before deploying:
 - Git
 - Node.js 20 or newer
 - npm
-- Python 3.13 or newer
-- uv
 - A GitHub repository for this project
 - A Vercel account connected to GitHub
-- A Render account connected to GitHub
 - A MongoDB Atlas account
 
 Recommended local verification before deployment:
 
 ```bash
-cd frontend
+cd backend
 npm install
-npm run lint
+npm run typecheck
+npm test
 npm run build
 ```
 
 ```bash
-cd ../backend
-uv sync
-uv run fastapi dev
+cd ../frontend
+npm install
+npm run lint
+npm exec tsc -- --noEmit
+npm test -- --run
+npm run build
 ```
 
-The backend should start at `http://127.0.0.1:8000`, and the frontend should build without errors.
+## 2. Backend Vercel Readiness
 
-## 2. Prepare Environment Variables
+The backend can run in two modes:
 
-The backend uses these MongoDB variables from `backend/sample.env`:
+- Local development: `backend/src/server.ts` connects to MongoDB and starts `app.listen(...)`.
+- Vercel deployment: `backend/api/index.ts` and `backend/api/[...path].ts` export a serverless handler.
 
-```env
-MONGODB_USERNAME={USERNAME}
-MONGODB_PASSWORD={PASSWORD}
-MONGODB_URI={URI}
+The Vercel handler is in:
+
+```text
+backend/src/vercel.ts
 ```
 
-Create production values in MongoDB Atlas before deploying.
+That handler creates the Express app once, caches the MongoDB connection promise, and lets Vercel invoke the app per request.
 
-Do not commit real secrets to Git. Keep `backend/.env` local only.
+The backend Vercel routing config is:
 
-Recommended production backend variables:
-
-```env
-MONGODB_USERNAME=your_atlas_database_user
-MONGODB_PASSWORD=your_atlas_database_password
-MONGODB_URI=mongodb+srv://your_atlas_cluster/audrolics
+```text
+backend/vercel.json
 ```
 
-Recommended frontend variables:
+It supports:
 
-```env
-NEXT_PUBLIC_API_BASE_URL=https://your-render-service.onrender.com
+```text
+GET    /
+GET    /api/v1/schematics
+POST   /api/v1/schematics
+GET    /api/v1/schematics/:schematicId
+PUT    /api/v1/schematics/:schematicId
+DELETE /api/v1/schematics/:schematicId
 ```
 
-The current frontend scaffold may not use `NEXT_PUBLIC_API_BASE_URL` yet, but add it when API calls are implemented so the deployed frontend does not hardcode local backend URLs.
-  
-## 3. Create MongoDB Atlas Database
+## 3. Prepare MongoDB Atlas
 
 1. Sign in to MongoDB Atlas.
 2. Create a project named `Audrolics`.
-3. Create a cluster. A free shared cluster is enough for the current scaffold.
+3. Create a cluster. A free shared cluster is enough for the current schematic API.
 4. Create a database user.
 5. Save the username and password.
 6. Add a network access rule.
-7. For Render deployment, either allow Render outbound IPs if you have a paid static outbound IP setup, or temporarily allow `0.0.0.0/0` during early development.
+7. For early Vercel deployment, allow `0.0.0.0/0`. Tighten this later if your plan supports static outbound networking.
 8. Copy the connection string.
-9. Replace the username, password, and database name in the connection string.
+9. Put the database name in the connection string or use `MONGODB_DATABASE=audrolics`.
 
-Use a database name like `audrolics`.
+Do not commit real secrets to Git. Keep `.env` files local only.
 
-## 4. Backend Deployment On Render
+## 4. Deploy Backend On Vercel
 
-The backend is a FastAPI app in `backend/` with the default FastAPI entrypoint at `backend/main.py`.
+Create a separate Vercel project for the backend.
 
-### 4.1 Create The Render Web Service
+### 4.1 Create The Backend Project
 
-1. Sign in to Render.
-2. Choose `New` -> `Web Service`.
-3. Connect the GitHub repository.
-4. Select the branch to deploy, usually `main`.
-5. Set the root directory to:
+1. Sign in to Vercel.
+2. Choose `Add New` -> `Project`.
+3. Import the GitHub repository.
+4. Set root directory to:
 
 ```text
 backend
 ```
 
-6. Set runtime to Python.
+5. Set framework preset to `Other`.
+6. Set install command:
+
+```bash
+npm ci
+```
+
 7. Set build command:
 
 ```bash
-uv sync --frozen
+npm run build
 ```
 
-8. Set start command:
+8. Leave output directory empty.
 
-```bash
-uv run fastapi run main.py --host 0.0.0.0 --port $PORT
-```
+### 4.2 Add Backend Environment Variables
 
-Render provides `$PORT`; the backend must bind to `0.0.0.0` and that port.
-
-### 4.2 Add Render Environment Variables
-
-In Render, open the service settings and add:
+In the backend Vercel project, add these environment variables:
 
 ```env
-MONGODB_USERNAME=your_atlas_database_user
-MONGODB_PASSWORD=your_atlas_database_password
-MONGODB_URI=mongodb+srv://your_atlas_cluster/audrolics
+MONGODB_URI=mongodb+srv://your_username:your_password@your-cluster.mongodb.net/
+MONGODB_DATABASE=audrolics
+FRONTEND_ORIGINS=https://your-frontend-project.vercel.app
 ```
 
-If frontend CORS settings are added later, also add:
+For preview deployments, add the preview frontend URL to `FRONTEND_ORIGINS` as a comma-separated value:
 
 ```env
-FRONTEND_ORIGIN=https://your-vercel-app.vercel.app
+FRONTEND_ORIGINS=https://your-frontend-project.vercel.app,https://your-preview-url.vercel.app
 ```
+
+`PORT` is not needed on Vercel because Vercel invokes serverless functions directly. Keep `PORT=8000` only for local development.
 
 ### 4.3 Deploy Backend
 
-1. Click `Manual Deploy` -> `Deploy latest commit`, or push to the configured branch.
+1. Click `Deploy`.
 2. Wait for the build to finish.
-3. Open the service URL.
-4. Confirm the API responds:
+3. Open the backend Vercel URL.
+4. Confirm the health response:
 
 ```bash
-curl https://your-render-service.onrender.com/
+curl https://your-backend-project.vercel.app/
 ```
 
-Expected current scaffold response:
+Expected response:
 
 ```json
-{"Hello":"World"}
+{"name":"Audrolics API","status":"ok"}
 ```
 
-5. Confirm the API docs are available:
+5. Confirm the schematic API reaches MongoDB:
 
-```text
-https://your-render-service.onrender.com/docs
+```bash
+curl -H "X-User-Id: dev-user" https://your-backend-project.vercel.app/api/v1/schematics
 ```
 
-## 5. Frontend Deployment On Vercel
+Expected response for a new database:
 
-The frontend is a Next.js app in `frontend/`.
+```json
+[]
+```
 
-### 5.1 Create The Vercel Project
+If this fails, check:
+
+- `MONGODB_URI` is set in the backend Vercel project.
+- `MONGODB_DATABASE` is set or the connection string includes a database.
+- MongoDB Atlas network access allows Vercel.
+- The request includes `X-User-Id` until real authentication is implemented.
+
+## 5. Deploy Frontend On Vercel
+
+Create a separate Vercel project for the frontend.
+
+### 5.1 Create The Frontend Project
 
 1. Sign in to Vercel.
 2. Choose `Add New` -> `Project`.
-3. Import the GitHub repository.
-4. Set framework preset to Next.js.
+3. Import the same GitHub repository.
+4. Set framework preset to `Next.js`.
 5. Set root directory to:
 
 ```text
@@ -184,61 +199,63 @@ npm run build
 
 8. Leave output directory as the Next.js default.
 
-### 5.2 Add Vercel Environment Variables
+### 5.2 Add Frontend Environment Variables
 
-Add this once the frontend calls the backend:
+In the frontend Vercel project, set the backend URL:
 
 ```env
-NEXT_PUBLIC_API_BASE_URL=https://your-render-service.onrender.com
+BACKEND_API_BASE_URL=https://your-backend-project.vercel.app
 ```
 
-Add it to all Vercel environments that should call the backend:
+`frontend/next.config.ts` rewrites frontend requests from:
 
-- Production
-- Preview
-- Development, if needed
+```text
+/api/v1/schematics
+```
+
+to:
+
+```text
+https://your-backend-project.vercel.app/api/v1/schematics
+```
+
+You may also set `NEXT_PUBLIC_API_BASE_URL`, but `BACKEND_API_BASE_URL` is preferred because the rewrite runs in Next.js config and does not need to expose the backend URL to browser code.
+
+After changing Vercel environment variables, redeploy the frontend project so `next.config.ts` picks up the value.
 
 ### 5.3 Deploy Frontend
 
 1. Click `Deploy`.
 2. Wait for the build to finish.
-3. Open the generated Vercel URL.
-4. Confirm the page loads.
-5. If the frontend calls the API, open browser devtools and confirm requests go to the Render backend URL, not `localhost`.
+3. Open the frontend Vercel URL.
+4. Open the builder page.
+5. Save a schematic.
+6. Open browser devtools and confirm the frontend calls same-origin `/api/v1/schematics`.
+7. Confirm the request succeeds and the backend Vercel project receives the request.
 
-## 6. Configure CORS Before Connecting Frontend To Backend
+## 6. Configure CORS
 
-When the frontend starts calling backend endpoints from Vercel, the backend must allow that origin.
+The backend reads CORS origins from:
 
-Add CORS middleware in `backend/src/backend/main.py`:
-
-```python
-import os
-
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-
-app = FastAPI()
-
-frontend_origin = os.getenv("FRONTEND_ORIGIN")
-
-if frontend_origin:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=[frontend_origin],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+```env
+FRONTEND_ORIGINS
 ```
 
-Then set `FRONTEND_ORIGIN` in Render to the production Vercel URL.
+Use comma-separated origins:
 
-For preview deployments, use a stricter dynamic allowlist rather than `allow_origins=["*"]` if the backend uses cookies or credentials.
+```env
+FRONTEND_ORIGINS=https://your-frontend-project.vercel.app,http://localhost:3000
+```
+
+For production, include the production frontend URL. For local testing against the deployed backend, include `http://localhost:3000`.
+
+Do not use `*` once authentication cookies or bearer tokens are implemented.
 
 ## 7. CI: GitHub Actions Validation
 
-Create this file:
+Use one workflow to validate both projects.
+
+Create:
 
 ```text
 .github/workflows/ci.yml
@@ -256,6 +273,36 @@ on:
       - main
 
 jobs:
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
   frontend:
     name: Frontend
     runs-on: ubuntu-latest
@@ -280,138 +327,38 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Typecheck
+        run: npm exec tsc -- --noEmit
+
+      - name: Test
+        run: npm test -- --run
+
       - name: Build
         run: npm run build
-
-  backend:
-    name: Backend
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: backend
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version-file: backend/.python-version
-
-      - name: Install dependencies
-        run: uv sync --frozen
-
-      - name: Import FastAPI app
-        run: uv run python -c "from main import app; print(app.title)"
 ```
-
-This CI workflow checks that:
-
-- Frontend dependencies install from the lockfile.
-- Frontend lint passes.
-- Frontend production build succeeds.
-- Backend dependencies install from `uv.lock`.
-- The FastAPI app imports through the default `main:app` entrypoint.
-
-When backend tests are added, include a test step:
-
-```yaml
-      - name: Test
-        run: uv run pytest
-```
-
-Add `pytest` to backend dependencies or dependency groups before enabling that step.
 
 ## 8. CD: Automatic Deployments
 
-Use platform-native deploy hooks for the first deployment setup:
+Vercel can deploy both projects directly from GitHub:
 
-- Vercel deploys `frontend/` automatically when changes are pushed to the production branch.
-- Render deploys `backend/` automatically when changes are pushed to the production branch.
+- Backend Vercel project root: `backend`
+- Frontend Vercel project root: `frontend`
 
 Recommended branch policy:
 
 - `main`: production deploy branch
 - Pull requests: preview checks and code review
-- Merge to `main`: triggers production deployment
+- Merge to `main`: triggers production deployment for both Vercel projects
 
 Recommended GitHub branch protection for `main`:
 
 1. Require pull request before merging.
 2. Require status checks to pass.
-3. Select the `Frontend` and `Backend` CI jobs.
+3. Select the `Backend` and `Frontend` CI jobs.
 4. Require branches to be up to date before merging.
 5. Restrict direct pushes if the team needs stricter release control.
 
-## 9. Optional CD From GitHub Actions
-
-Vercel and Render can deploy directly from GitHub without deployment steps in Actions. If you prefer explicit GitHub-controlled deployment, use deploy hooks.
-
-### 9.1 Render Deploy Hook
-
-1. In Render, open the backend service.
-2. Go to `Settings`.
-3. Copy the deploy hook URL.
-4. In GitHub, add a repository secret:
-
-```text
-RENDER_DEPLOY_HOOK_URL
-```
-
-Add this job to `.github/workflows/ci.yml`:
-
-```yaml
-  deploy-backend:
-    name: Deploy Backend
-    runs-on: ubuntu-latest
-    needs:
-      - backend
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-
-    steps:
-      - name: Trigger Render deploy
-        run: curl -fsS -X POST "$RENDER_DEPLOY_HOOK_URL"
-        env:
-          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
-```
-
-### 9.2 Vercel Deploy Hook
-
-1. In Vercel, open the frontend project.
-2. Go to `Settings` -> `Git` -> `Deploy Hooks`.
-3. Create a hook for the production branch.
-4. In GitHub, add a repository secret:
-
-```text
-VERCEL_DEPLOY_HOOK_URL
-```
-
-Add this job:
-
-```yaml
-  deploy-frontend:
-    name: Deploy Frontend
-    runs-on: ubuntu-latest
-    needs:
-      - frontend
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-
-    steps:
-      - name: Trigger Vercel deploy
-        run: curl -fsS -X POST "$VERCEL_DEPLOY_HOOK_URL"
-        env:
-          VERCEL_DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
-```
-
-Do not use both platform-native automatic deploys and deploy-hook Actions at the same time, or each merge can trigger duplicate deployments.
-
-## 10. Recommended Release Flow
+## 9. Recommended Release Flow
 
 1. Create a feature branch:
 
@@ -423,15 +370,18 @@ git checkout -b feature/your-change
 3. Run local checks:
 
 ```bash
-cd frontend
-npm run lint
+cd backend
+npm run typecheck
+npm test
 npm run build
 ```
 
 ```bash
-cd ../backend
-uv sync
-uv run python -c "from main import app; print(app.title)"
+cd ../frontend
+npm run lint
+npm exec tsc -- --noEmit
+npm test -- --run
+npm run build
 ```
 
 4. Push the branch:
@@ -442,68 +392,73 @@ git push -u origin feature/your-change
 
 5. Open a pull request.
 6. Wait for CI to pass.
-7. Review Vercel preview deployment, if enabled.
+7. Review Vercel preview deployments.
 8. Merge to `main`.
-9. Confirm Vercel production deployment finishes.
-10. Confirm Render backend deployment finishes.
-11. Smoke test production:
+9. Confirm both Vercel production deployments finish.
+10. Smoke test production.
 
-```bash
-curl https://your-render-service.onrender.com/
-```
-
-Open:
-
-```text
-https://your-vercel-app.vercel.app
-```
-
-## 11. Production Smoke Test Checklist
+## 10. Production Smoke Test Checklist
 
 After each production deploy, verify:
 
 - Frontend URL loads.
 - Backend `/` responds.
-- Backend `/docs` loads.
+- `GET /api/v1/schematics` returns `[]` or saved schematics when called with `X-User-Id`.
 - Browser console has no failed API requests.
-- API requests use the production Render URL.
-- MongoDB connection succeeds once persistence endpoints are implemented.
+- Frontend network requests use same-origin `/api/v1/schematics`.
+- Frontend rewrite reaches the backend Vercel URL.
+- MongoDB Atlas shows saved schematics in the `audrolics.schematics` collection.
 - Authentication flows work once implemented.
-- Save/load schematic flows work once implemented.
-- Hydraulic calculation endpoints return expected validation errors for invalid input once implemented.
+- Save, list, load, update, and delete schematic flows work.
+- Future hydraulic calculation endpoints return expected validation errors for invalid input.
 
-## 12. Rollback Plan
+Smoke commands:
 
-### Vercel Rollback
+```bash
+curl https://your-backend-project.vercel.app/
+curl -H "X-User-Id: dev-user" https://your-backend-project.vercel.app/api/v1/schematics
+```
 
-1. Open the Vercel project.
+Open:
+
+```text
+https://your-frontend-project.vercel.app
+```
+
+## 11. Rollback Plan
+
+### Frontend Rollback
+
+1. Open the frontend Vercel project.
 2. Go to `Deployments`.
 3. Select the last known good deployment.
 4. Promote it to production.
 
-### Render Rollback
+### Backend Rollback
 
-1. Open the Render backend service.
-2. Go to `Events` or `Deploys`.
-3. Select the last known good deploy.
-4. Redeploy that commit.
+1. Open the backend Vercel project.
+2. Go to `Deployments`.
+3. Select the last known good deployment.
+4. Promote it to production.
 
-If the problem is database-related, rollback code first, then inspect migrations or data changes. The current scaffold does not include migrations yet.
+If the problem is database-related, rollback code first, then inspect data changes. The current project does not include migrations yet.
 
-## 13. Operational Notes
+## 12. Operational Notes
 
-- Keep production secrets in Render and Vercel, not in `.env` files committed to Git.
+- Keep production secrets in Vercel, not in committed `.env` files.
 - Use MongoDB Atlas backups before enabling real user data.
-- Add backend health endpoints before production use, for example `/health`.
+- Keep `MONGODB_URI` scoped to a database user with only the permissions the app needs.
 - Add structured logging before field use.
-- Add tests for hydraulic calculations before relying on production outputs.
+- Add authentication before real multi-user production use.
 - Validate the hydraulic solver against EPANET reference networks before using results for field decisions.
 - Keep frontend and backend deployment configuration documented whenever hosting settings change.
 
-## 14. Current App-Specific Notes
+## 13. Current App-Specific Notes
 
-- The backend default command `uv run fastapi dev` works because `backend/main.py` re-exports `app` from the package.
-- For production, use `fastapi run`, not `fastapi dev`.
-- The frontend currently contains scaffold pages; API integration and production environment variables should be wired when backend endpoints are implemented.
-- The backend currently exposes sample routes in `backend/src/backend/main.py`.
-- MongoDB variables are scaffolded, but persistence code is not implemented yet.
+- The backend is deployed from `backend/`.
+- The frontend is deployed from `frontend/`.
+- The backend currently exposes schematic CRUD routes only.
+- The backend requires `X-User-Id` until real authentication is implemented.
+- The backend requires MongoDB and does not use in-memory persistence.
+- The frontend builder already saves through `/api/v1/schematics`.
+- Simulation, anomaly detection, export routes, and authentication are still planned work.

@@ -69,8 +69,8 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 ```
 
 `BACKEND_API_BASE_URL` can also be used for server-side deployment config. Production
-should point one of these values to the Render backend. Do not hardcode localhost in
-components or client data modules.
+should point one of these values to the deployed backend URL. Do not hardcode
+localhost in components or client data modules.
 
 Until Feature 4 authentication is implemented, schematic API calls send `X-User-Id`.
 The current builder uses `dev-user` by default and lets you edit that value in the UI.
