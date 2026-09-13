@@ -1213,13 +1213,13 @@ export function BuilderPage() {
       nodes: current.nodes.map((node) => {
         const found = result.node_results.find((n) => n.id === node.id);
         if (!found) return node;
-        const { id: _id, ...computed } = found;
+        const computed = Object.fromEntries(Object.entries(found).filter(([key]) => key !== "id"));
         return { ...node, computed: { ...node.computed, ...(computed as Record<string, number | null>) } };
       }),
       links: current.links.map((link) => {
         const found = result.link_results.find((l) => l.id === link.id);
         if (!found) return link;
-        const { id: _id, ...computed } = found;
+        const computed = Object.fromEntries(Object.entries(found).filter(([key]) => key !== "id"));
         return { ...link, computed: { ...link.computed, ...(computed as Record<string, number | null>) } };
       }),
     }));
