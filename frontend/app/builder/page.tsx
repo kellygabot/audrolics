@@ -27,9 +27,12 @@ import {
   deleteSchematic as deleteStoredSchematic,
   loadSchematic as loadStoredSchematic,
   saveSchematic as saveStoredSchematic,
+  runSimulationApi,
+  detectAnomaliesApi,
   SchematicApiError,
   formatSchematicError,
   type ApiErrorDetail,
+  type AnomalyApiResponse,
 } from "../../lib/builder-storage";
 
 // Elements, types and necessary variables
@@ -68,6 +71,15 @@ type CurvePoint = {
   headloss?: string;
 };
 
+type Measurement = {
+  id: string;
+  element_id: string;
+  element_type: "NODE" | "LINK";
+  measurement_type: "PRESSURE_HEAD" | "FLOW_RATE";
+  value: number;
+  unit: string;
+};
+
 type SchematicModel = {
   id?: string;
   user_id?: string;
@@ -76,7 +88,7 @@ type SchematicModel = {
   name: string;
   nodes: BuilderNode[];
   links: BuilderLink[];
-  measurements: unknown[];
+  measurements: Measurement[];
   canvas_state: { zoom: number; pan: { x: number; y: number } };
   thresholds: {
     threshold_pressure_pct: number;
@@ -265,9 +277,15 @@ export function BuilderPage() {
   );
   const [navigationGuard, setNavigationGuard] =
     useState<NavigationGuardState>(null);
-  const [saveErrorModalOpen, setSaveErrorModalOpen] = useState(false);
-  const [saveErrorItems, setSaveErrorItems] = useState<SaveErrorItem[]>([]);
-  const [saveErrorGeneral, setSaveErrorGeneral] = useState<string[]>([]);
+  const [errorModalOpen, setErrorModalOpen] = useState(false);
+  const [errorModalTitle, setErrorModalTitle] = useState("Unable to save schematic");
+  const [errorModalItems, setErrorModalItems] = useState<SaveErrorItem[]>([]);
+  const [errorModalGeneral, setErrorModalGeneral] = useState<string[]>([]);
+  const [simulationRunning, setSimulationRunning] = useState(false);
+  const [anomalyRunning, setAnomalyRunning] = useState(false);
+  const [anomalyResult, setAnomalyResult] = useState<AnomalyApiResponse | null>(
+    null,
+  );
 
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -766,7 +784,7 @@ export function BuilderPage() {
       // Let modal dialogs handle their own Esc; cancel canvas interactions otherwise.
       if (
         navigationGuard !== null ||
-        saveErrorModalOpen ||
+        errorModalOpen ||
         pendingSavedDelete !== null
       ) {
         return;
@@ -1065,9 +1083,10 @@ export function BuilderPage() {
     const errors = validateModel(model);
     const clientErrorItems = buildSaveErrorItems(errors);
     if (clientErrorItems.length > 0) {
-      setSaveErrorItems(clientErrorItems);
-      setSaveErrorGeneral([]);
-      setSaveErrorModalOpen(true);
+      setErrorModalTitle("Unable to save schematic");
+      setErrorModalItems(clientErrorItems);
+      setErrorModalGeneral([]);
+      setErrorModalOpen(true);
       return false;
     }
     try {
@@ -1076,8 +1095,8 @@ export function BuilderPage() {
       setModel(savedModel);
       setHistory({ past: [], future: [] });
       setLastSavedSnapshot(JSON.stringify(toApiPayload(savedModel)));
-      setSaveErrorItems([]);
-      setSaveErrorGeneral([]);
+      setErrorModalItems([]);
+      setErrorModalGeneral([]);
       return true;
     } catch (error) {
       const general: string[] = [];
@@ -1089,9 +1108,10 @@ export function BuilderPage() {
       } else {
         general.push(formatSchematicError(error, "Unable to save schematic"));
       }
-      setSaveErrorItems(items);
-      setSaveErrorGeneral(general);
-      setSaveErrorModalOpen(true);
+      setErrorModalTitle("Unable to save schematic");
+      setErrorModalItems(items);
+      setErrorModalGeneral(general);
+      setErrorModalOpen(true);
       return false;
     }
   }
@@ -1165,7 +1185,145 @@ export function BuilderPage() {
 
   function handleSaveErrorItemClick(item: SaveErrorItem) {
     setSelection([{ kind: item.kind, id: item.elementId }]);
-    setSaveErrorModalOpen(false);
+    setErrorModalOpen(false);
+  }
+
+  function showErrorModal(title: string, error: unknown) {
+    const general: string[] = [];
+    const items: SaveErrorItem[] = [];
+    if (error instanceof SchematicApiError && error.detail) {
+      const parsed = parseApiErrorDetail(error.detail);
+      general.push(...parsed.general);
+      items.push(...parsed.items);
+    } else {
+      general.push(formatSchematicError(error, title));
+    }
+    setErrorModalTitle(title);
+    setErrorModalItems(items);
+    setErrorModalGeneral(general);
+    setErrorModalOpen(true);
+  }
+
+  function applySimulationResult(result: {
+    node_results: Array<Record<string, number | null | string> & { id: string }>;
+    link_results: Array<Record<string, number | null | string> & { id: string }>;
+  }) {
+    setModel((current) => ({
+      ...current,
+      nodes: current.nodes.map((node) => {
+        const found = result.node_results.find((n) => n.id === node.id);
+        if (!found) return node;
+        const { id: _id, ...computed } = found;
+        return { ...node, computed: { ...node.computed, ...(computed as Record<string, number | null>) } };
+      }),
+      links: current.links.map((link) => {
+        const found = result.link_results.find((l) => l.id === link.id);
+        if (!found) return link;
+        const { id: _id, ...computed } = found;
+        return { ...link, computed: { ...link.computed, ...(computed as Record<string, number | null>) } };
+      }),
+    }));
+  }
+
+  async function runSimulation() {
+    setShowAllErrors(true);
+    const validationErrors = validateModel(model);
+    if (Object.keys(validationErrors).length > 0) {
+      setErrorModalTitle("Unable to run simulation");
+      setErrorModalItems(buildSaveErrorItems(validationErrors));
+      setErrorModalGeneral([]);
+      setErrorModalOpen(true);
+      return;
+    }
+    setSimulationRunning(true);
+    try {
+      const result = await runSimulationApi(DEV_USER_ID, toApiPayload(model));
+      applySimulationResult(result);
+      setAnomalyResult(null);
+      setLastSavedSnapshot(JSON.stringify(toApiPayload(model)));
+      const warnings = result.warnings?.length ? ` (${result.warnings.length} warning(s))` : "";
+      setStatusMessage(`Simulation complete in ${result.iterations} iterations${warnings}`);
+    } catch (error) {
+      showErrorModal("Unable to run simulation", error);
+    } finally {
+      setSimulationRunning(false);
+    }
+  }
+
+  async function runAnomalyDetection() {
+    setShowAllErrors(true);
+    const validationErrors = validateModel(model);
+    if (Object.keys(validationErrors).length > 0) {
+      setErrorModalTitle("Unable to run anomaly detection");
+      setErrorModalItems(buildSaveErrorItems(validationErrors));
+      setErrorModalGeneral([]);
+      setErrorModalOpen(true);
+      return;
+    }
+    const nodeMeasurements = model.measurements.filter((m) => m.element_type === "NODE");
+    const linkMeasurements = model.measurements.filter((m) => m.element_type === "LINK");
+    if (nodeMeasurements.length + linkMeasurements.length < 1) {
+      setStatusMessage("Add at least one field measurement before running anomaly detection");
+      return;
+    }
+    setAnomalyRunning(true);
+    try {
+      const result = await detectAnomaliesApi(DEV_USER_ID, {
+        ...toApiPayload(model),
+        measurements: model.measurements.map((m) => ({
+          ...m,
+          type: m.measurement_type,
+        })),
+      });
+      setAnomalyResult(result);
+      const segmentCount = result.suspect_segments.length;
+      setStatusMessage(
+        `Anomaly detection complete: ${result.flagged_points.length} flagged point(s), ${segmentCount} suspect segment(s)`,
+      );
+    } catch (error) {
+      showErrorModal("Unable to run anomaly detection", error);
+    } finally {
+      setAnomalyRunning(false);
+    }
+  }
+
+  function measurementForElement(elementId: string) {
+    return model.measurements.find((m) => m.element_id === elementId) ?? null;
+  }
+
+  function setMeasurementForElement(
+    elementId: string,
+    elementType: "NODE" | "LINK",
+    measurementType: "PRESSURE_HEAD" | "FLOW_RATE",
+    value: number | null,
+  ) {
+    const unit = measurementType === "PRESSURE_HEAD" ? "m" : "L/s";
+    setModel((current) => {
+      const existingIndex = current.measurements.findIndex(
+        (m) => m.element_id === elementId,
+      );
+      if (value === null) {
+        if (existingIndex === -1) return current;
+        return {
+          ...current,
+          measurements: current.measurements.filter((_, i) => i !== existingIndex),
+        };
+      }
+      const next: Measurement = {
+        id: existingIndex >= 0 ? current.measurements[existingIndex].id : id("measurement"),
+        element_id: elementId,
+        element_type: elementType,
+        measurement_type: measurementType,
+        value,
+        unit,
+      };
+      if (existingIndex === -1) {
+        return { ...current, measurements: [...current.measurements, next] };
+      }
+      const measurements = [...current.measurements];
+      measurements[existingIndex] = next;
+      return { ...current, measurements };
+    });
   }
 
   function deleteSchematic() {
@@ -1476,6 +1634,16 @@ export function BuilderPage() {
           <ToolbarButton label="New" onClick={guardedStartNewSchematic} />
           <ToolbarButton label="Save" onClick={saveSchematic} />
           <ToolbarButton
+            label={simulationRunning ? "Simulating…" : "Simulate"}
+            disabled={simulationRunning}
+            onClick={runSimulation}
+          />
+          <ToolbarButton
+            label={anomalyRunning ? "Detecting…" : "Detect Anomalies"}
+            disabled={anomalyRunning}
+            onClick={runAnomalyDetection}
+          />
+          <ToolbarButton
             label="Delete"
             disabled={!model.id}
             onClick={deleteSchematic}
@@ -1691,6 +1859,9 @@ export function BuilderPage() {
                     }
                   />
                 ))}
+                {anomalyResult && (
+                  <AnomalyOverlays model={model} anomalyResult={anomalyResult} />
+                )}
                 {selectionBox && (
                   <rect
                     x={selectionBox.x}
@@ -1743,6 +1914,15 @@ export function BuilderPage() {
                 onParamChange={(key, value) =>
                   updateNodeParam(selectedNode.id, key, value)
                 }
+                measurement={measurementForElement(selectedNode.id)}
+                onMeasurementChange={(value) =>
+                  setMeasurementForElement(
+                    selectedNode.id,
+                    "NODE",
+                    "PRESSURE_HEAD",
+                    value,
+                  )
+                }
               />
             )}
             {selectedLink && (
@@ -1761,6 +1941,15 @@ export function BuilderPage() {
                 onRename={renameSelected}
                 onParamChange={(key, value) =>
                   updateLinkParam(selectedLink.id, key, value)
+                }
+                measurement={measurementForElement(selectedLink.id)}
+                onMeasurementChange={(value) =>
+                  setMeasurementForElement(
+                    selectedLink.id,
+                    "LINK",
+                    "FLOW_RATE",
+                    value,
+                  )
                 }
               />
             )}
@@ -1826,26 +2015,26 @@ export function BuilderPage() {
 
       {/* Save Error Modal */}
       <Modal
-        open={saveErrorModalOpen}
-        title="Unable to save schematic"
-        onClose={() => setSaveErrorModalOpen(false)}
+        open={errorModalOpen}
+        title={errorModalTitle}
+        onClose={() => setErrorModalOpen(false)}
         actions={
           <>
             <ToolbarButton
               label="Close"
-              onClick={() => setSaveErrorModalOpen(false)}
+              onClick={() => setErrorModalOpen(false)}
             />
           </>
         }
       >
         <div className="space-y-4">
-          {saveErrorItems.length > 0 && (
+          {errorModalItems.length > 0 && (
             <div>
               <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
                 Validation errors
               </h3>
               <ul className="mt-2 space-y-2">
-                {saveErrorItems.map((item, index) => (
+                {errorModalItems.map((item, index) => (
                   <li key={index}>
                     <button
                       type="button"
@@ -1863,13 +2052,13 @@ export function BuilderPage() {
               </ul>
             </div>
           )}
-          {saveErrorGeneral.length > 0 && (
+          {errorModalGeneral.length > 0 && (
             <div>
               <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
                 Server errors
               </h3>
               <ul className="mt-2 space-y-1">
-                {saveErrorGeneral.map((msg, index) => (
+                {errorModalGeneral.map((msg, index) => (
                   <li key={index} className="text-sm text-red-600">
                     {msg}
                   </li>
@@ -2195,6 +2384,79 @@ function LinkSymbol({ link, mid }: { link: BuilderLink; mid: Point }) {
   );
 }
 
+function AnomalyOverlays({
+  model,
+  anomalyResult,
+}: {
+  model: SchematicModel;
+  anomalyResult: AnomalyApiResponse;
+}) {
+  const [hovered, setHovered] = useState<number | null>(null);
+  return (
+    <>
+      {anomalyResult.suspect_segments.map((segment, index) => {
+        const path =
+          segment.pipe_ids && segment.pipe_ids.length > 0
+            ? segment.pipe_ids
+            : segment.path && segment.path.length > 0
+              ? segment.path
+              : findLinkPath(segment.from, segment.to, model.links);
+        if (!path || path.length === 0) return null;
+        const points: Point[] = [];
+        for (const linkId of path) {
+          const link = model.links.find((l) => l.id === linkId);
+          if (!link) continue;
+          const from = model.nodes.find((n) => n.id === link.from_node_id);
+          const to = model.nodes.find((n) => n.id === link.to_node_id);
+          if (!from || !to) continue;
+          points.push(from, to);
+        }
+        if (points.length < 2) return null;
+        const d = points
+          .map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`)
+          .join(" ");
+        const mid = points[Math.floor(points.length / 2)];
+        const color = segment.signature === "LEAK" ? "#ef4444" : "#f97316";
+        return (
+          <g key={index} onMouseEnter={() => setHovered(index)} onMouseLeave={() => setHovered(null)}>
+            <path
+              d={d}
+              fill="none"
+              stroke={color}
+              strokeWidth="6"
+              strokeDasharray="6 4"
+              opacity="0.6"
+              pointerEvents="all"
+              style={{ cursor: "pointer" }}
+            />
+            {hovered === index && (
+              <g>
+                <rect
+                  x={mid.x + 8}
+                  y={mid.y - 38}
+                  width="160"
+                  height="34"
+                  rx="4"
+                  fill="rgba(15, 23, 42, 0.9)"
+                />
+                <text
+                  x={mid.x + 16}
+                  y={mid.y - 18}
+                  fill="white"
+                  fontSize="11"
+                  fontWeight="600"
+                >
+                  {segment.signature} — {Math.round(segment.confidence)}% confidence
+                </text>
+              </g>
+            )}
+          </g>
+        );
+      })}
+    </>
+  );
+}
+
 function PendingLink({
   model,
   pendingLink,
@@ -2229,6 +2491,8 @@ function ElementForm(props: {
   onTouch: (field: string) => void;
   onRename: (value: string) => void;
   onParamChange: (key: string, value: FieldValue) => void;
+  measurement?: Measurement | null;
+  onMeasurementChange?: (value: number | null) => void;
 }) {
   const fields = fieldsForType(props.type, props.params);
   return (
@@ -2266,27 +2530,64 @@ function ElementForm(props: {
         </div>
       </section>
 
+      {props.onMeasurementChange && (
+        <section className="rounded border border-slate-200 bg-white">
+          <div className="border-b border-slate-200 px-4 py-3">
+            <h2 className="text-sm font-semibold text-slate-900">
+              Field Measurement
+            </h2>
+          </div>
+          <div className="space-y-3 p-4">
+            <label className="block">
+              <span className="text-xs font-medium text-slate-500">
+                {props.type === "PIPE" || props.type === "PUMP" ||
+                props.type === "VALVE" || props.type === "FILTER"
+                  ? "Flow rate (L/s)"
+                  : "Pressure head (m)"}
+              </span>
+              <input
+                type="number"
+                value={props.measurement?.value ?? ""}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  props.onMeasurementChange!(
+                    value === "" ? null : Number(value),
+                  );
+                }}
+                className="mt-1 h-9 w-full rounded border border-slate-300 px-2 text-sm"
+              />
+            </label>
+          </div>
+        </section>
+      )}
+
       <section className="rounded border border-slate-200 bg-slate-100">
         <div className="border-b border-slate-200 px-4 py-3">
           <h2 className="text-sm font-semibold text-slate-900">
             Computed Results
           </h2>
           <p className="mt-1 text-xs text-slate-500">
-            Read-only until simulation is implemented.
+            Read-only simulation outputs.
           </p>
         </div>
         <div className="space-y-2 p-4">
-          {Object.keys(computedForType(props.type)).map((key) => (
-            <div
-              key={key}
-              className="flex justify-between rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs"
-            >
-              <span className="font-medium text-slate-600">
-                {labelize(key)}
-              </span>
-              <span className="text-slate-400">Pending</span>
-            </div>
-          ))}
+          {Object.keys(computedForType(props.type)).map((key) => {
+            const value = props.computed[key];
+            const display = value === null || value === undefined ? "Pending" : String(value);
+            return (
+              <div
+                key={key}
+                className="flex justify-between rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs"
+              >
+                <span className="font-medium text-slate-600">
+                  {labelize(key)}
+                </span>
+                <span className={value === null || value === undefined ? "text-slate-400" : "text-slate-800"}>
+                  {display}
+                </span>
+              </div>
+            );
+          })}
         </div>
       </section>
     </div>
@@ -2763,6 +3064,39 @@ function fromApiPayload(
     links: payload.links ?? [],
     measurements: payload.measurements ?? [],
   };
+}
+
+function findLinkPath(
+  fromNodeId: string,
+  toNodeId: string,
+  links: BuilderLink[],
+): string[] | null {
+  const adjacency = new Map<string, string[]>();
+  for (const link of links) {
+    if (!link.from_node_id || !link.to_node_id) continue;
+    const list = adjacency.get(link.from_node_id) ?? [];
+    list.push(link.id);
+    adjacency.set(link.from_node_id, list);
+    const reverse = adjacency.get(link.to_node_id) ?? [];
+    reverse.push(link.id);
+    adjacency.set(link.to_node_id, reverse);
+  }
+  const visitedNodes = new Set<string>();
+  const queue: { nodeId: string; path: string[] }[] = [{ nodeId: fromNodeId, path: [] }];
+  while (queue.length > 0) {
+    const { nodeId, path } = queue.shift()!;
+    if (nodeId === toNodeId) return path;
+    if (visitedNodes.has(nodeId)) continue;
+    visitedNodes.add(nodeId);
+    for (const linkId of adjacency.get(nodeId) ?? []) {
+      const link = links.find((l) => l.id === linkId);
+      if (!link) continue;
+      const nextNodeId = link.from_node_id === nodeId ? link.to_node_id : link.from_node_id;
+      if (!nextNodeId) continue;
+      queue.push({ nodeId: nextNodeId, path: [...path, linkId] });
+    }
+  }
+  return null;
 }
 
 function normalizeParams(params: InputParams): InputParams {
