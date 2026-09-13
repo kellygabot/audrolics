@@ -173,14 +173,14 @@ const linkTools: {
   code: string;
   detail: string;
 }[] = [
-  { type: "PIPE", label: "Pipe", code: "P", detail: "Straight line" },
-  { type: "PUMP", label: "Pump", code: "PU", detail: "Pump symbol" },
-  { type: "VALVE", label: "Valve", code: "V", detail: "Typed valve" },
+  { type: "PIPE", label: "Pipe", code: "P", detail: "Connects two nodes" },
+  { type: "PUMP", label: "Pump", code: "PU", detail: "Inline device — place between Junctions" },
+  { type: "VALVE", label: "Valve", code: "V", detail: "Inline device — place between Junctions" },
   {
     type: "FILTER",
     label: "Strainer / Filter",
     code: "F",
-    detail: "Dashed diamond",
+    detail: "Inline device — place between Junctions",
   },
 ];
 
@@ -495,6 +495,20 @@ export function BuilderPage() {
     setActiveTool(null);
   }
 
+  function hasOverlappingLink(fromNodeId: string, toNodeId: string): boolean {
+    return model.links.some(
+      (link) =>
+        (link.from_node_id === fromNodeId && link.to_node_id === toNodeId) ||
+        (link.from_node_id === toNodeId && link.to_node_id === fromNodeId),
+    );
+  }
+
+  function cancelPendingLink(message?: string) {
+    setPendingLink(null);
+    setActiveTool(null);
+    if (message) setStatusMessage(message);
+  }
+
   function createLink(type: LinkType, fromNodeId: string, toNodeId: string) {
     // Links are graph edges first and rendered lines second. The saved endpoint
     // ids are the source of truth; points are cached for export/interoperability.
@@ -505,6 +519,7 @@ export function BuilderPage() {
     const from = model.nodes.find((node) => node.id === fromNodeId);
     const to = model.nodes.find((node) => node.id === toNodeId);
     if (!from || !to) return;
+    const isDuplicate = hasOverlappingLink(fromNodeId, toNodeId);
     const link: BuilderLink = {
       id: id("link"),
       label: nextLabel(type, model),
@@ -525,6 +540,9 @@ export function BuilderPage() {
     setSelection([{ kind: "link", id: link.id }]);
     setPendingLink(null);
     setActiveTool(null);
+    if (isDuplicate) {
+      setStatusMessage("Warning: duplicate path detected.");
+    }
   }
 
   function handleCanvasPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
@@ -539,6 +557,9 @@ export function BuilderPage() {
     const world = screenToWorld(event.clientX, event.clientY);
     if (event.button === 1 || (event.button === 0 && isSpacePressed)) {
       event.preventDefault();
+      if (pendingLink) {
+        cancelPendingLink("Link cancelled — E102: dangling endpoint. Snap to a node.");
+      }
       event.currentTarget.setPointerCapture(event.pointerId);
       setPanState({
         pointerId: event.pointerId,
@@ -550,10 +571,14 @@ export function BuilderPage() {
       return;
     }
     if (isNodeTool(activeTool)) {
+      if (pendingLink) cancelPendingLink();
       createNode(activeTool, world);
       return;
     }
     if (event.button === 0) {
+      if (pendingLink) {
+        cancelPendingLink("Link cancelled — E102: dangling endpoint. Snap to a node.");
+      }
       event.currentTarget.setPointerCapture(event.pointerId);
       setSelection([]);
       setDragState({
@@ -638,8 +663,11 @@ export function BuilderPage() {
     }
     if (pendingLink) {
       const target = nearestNode(world, pendingLink.fromNodeId);
-      if (target)
+      if (target) {
         createLink(pendingLink.type, pendingLink.fromNodeId, target.id);
+      } else {
+        cancelPendingLink("Link cancelled — E102: dangling endpoint. Snap to a node.");
+      }
     }
   }
 
@@ -652,6 +680,10 @@ export function BuilderPage() {
     const world = screenToWorld(event.clientX, event.clientY);
     if (isLinkTool(activeTool)) {
       setPendingLink({ type: activeTool, fromNodeId: node.id, cursor: world });
+      return;
+    }
+    if (pendingLink && node.id === pendingLink.fromNodeId) {
+      cancelPendingLink("Link cancelled — cannot connect a node to itself.");
       return;
     }
     if (event.shiftKey) {
@@ -728,6 +760,33 @@ export function BuilderPage() {
     if (event.key === "Delete" || event.key === "Backspace") {
       event.preventDefault();
       deleteSelection();
+      return;
+    }
+    if (event.key === "Escape") {
+      // Let modal dialogs handle their own Esc; cancel canvas interactions otherwise.
+      if (
+        navigationGuard !== null ||
+        saveErrorModalOpen ||
+        pendingSavedDelete !== null
+      ) {
+        return;
+      }
+      if (pendingLink) {
+        event.preventDefault();
+        cancelPendingLink("Link cancelled.");
+        setContextMenu(null);
+        return;
+      }
+      if (contextMenu) {
+        event.preventDefault();
+        setContextMenu(null);
+        return;
+      }
+      if (activeTool) {
+        event.preventDefault();
+        setActiveTool(null);
+        return;
+      }
       return;
     }
     if (event.key === "+" || event.key === "=") nudgeZoom(ZOOM_STEP);
@@ -1501,6 +1560,11 @@ export function BuilderPage() {
               <span>Wheel: zoom</span>
               <span>Space+drag: pan</span>
               <span>Shift+click: multi-select</span>
+              {isLinkTool(activeTool) && (
+                <span className="text-cyan-700">
+                  Links connect node-to-node. Use Junctions between inline devices.
+                </span>
+              )}
             </div>
             <div className="flex items-center gap-2">
               <ToolbarButton label="PNG" onClick={exportPng} />
@@ -1522,16 +1586,22 @@ export function BuilderPage() {
                 "application/audrolics-tool",
               ) as ToolType;
               const point = screenToWorld(event.clientX, event.clientY);
-              if (isNodeTool(tool)) createNode(tool, point);
+              if (isNodeTool(tool)) {
+                if (pendingLink) cancelPendingLink();
+                createNode(tool, point);
+              }
               if (isLinkTool(tool)) {
                 const node = nearestNode(point);
-                if (node)
+                if (node) {
                   setPendingLink({
                     type: tool,
                     fromNodeId: node.id,
                     cursor: point,
                   });
-                setActiveTool(tool);
+                  setActiveTool(tool);
+                } else {
+                  setStatusMessage("E102: dangling endpoint. Drop on a node.");
+                }
               }
             }}
             onDragOver={(event) => event.preventDefault()}

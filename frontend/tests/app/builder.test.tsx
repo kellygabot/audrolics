@@ -55,15 +55,15 @@ describe('BuilderPage', () => {
         const view = render(<BuilderPage />)
 
         const canvas = view.getByRole('application', { name: /schematic builder canvas/i })
-        fireEvent.click(view.getByRole('button', { name: /reservoir/i }))
+        fireEvent.click(view.getByRole('button', { name: /reservoir.*hatched triangle/i }))
         fireEvent.pointerDown(canvas, { clientX: 100, clientY: 120, pointerId: 1, button: 0 })
         fireEvent.pointerUp(canvas, { clientX: 100, clientY: 120, pointerId: 1 })
 
-        fireEvent.click(view.getByRole('button', { name: /junction/i }))
+        fireEvent.click(view.getByRole('button', { name: /junction.*small circle/i }))
         fireEvent.pointerDown(canvas, { clientX: 260, clientY: 120, pointerId: 2, button: 0 })
         fireEvent.pointerUp(canvas, { clientX: 260, clientY: 120, pointerId: 2 })
 
-        fireEvent.click(view.getByRole('button', { name: /pipe/i }))
+        fireEvent.click(view.getByRole('button', { name: /pipe.*connects two nodes/i }))
         const nodes = view.container.querySelectorAll('[data-element-id^="node-"]')
         expect(nodes).toHaveLength(2)
         fireEvent.pointerDown(nodes[0], { clientX: 100, clientY: 120, pointerId: 3, button: 0 })
