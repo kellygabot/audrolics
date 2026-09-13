@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Modal from "@/components/modal/page";
@@ -74,12 +75,10 @@ export default function SchematicsPage() {
 
   return (
     <main className="flex min-h-screen flex-col bg-slate-100 text-slate-950">
-      <header className="flex h-14 shrink-0 items-center justify-between border-b border-slate-300 bg-white px-4 shadow-sm">
+      <header className="flex h-22 shrink-0 items-center justify-between border-b border-slate-300 bg-white px-4 shadow-sm">
         <div className="flex min-w-0 items-center gap-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded border border-cyan-700 bg-cyan-700 text-sm font-bold text-white">
-            A
-          </div>
-          <h1 className="text-sm font-semibold">Schematic Library</h1>
+          <Image src="/logo.svg" alt="Logo" width={32} height={32} className="h-8 w-8 ml-4" />
+          <h1 className="text-[1.3rem] opacity-66 pl-4 font-poppins">Audrolics</h1>
         </div>
         <div className="flex items-center gap-2">
           <button
