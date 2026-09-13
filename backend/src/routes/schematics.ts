@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import { Router } from "express";
 
 import { SchematicRepository } from "../repositories/schematics.js";
@@ -6,6 +7,25 @@ import { ApiError } from "../utils/errors.js";
 
 export const schematicsRouter = Router();
 const repository = new SchematicRepository();
+
+const requireDbConnection = () => {
+  if (mongoose.connection.readyState !== 1) {
+    throw new ApiError(
+      503,
+      "E500",
+      "Database connection is currently unavailable. Please verify MongoDB is running or your IP is whitelisted in MongoDB Atlas Network Access.",
+    );
+  }
+};
+
+schematicsRouter.use((_request, _response, next) => {
+  try {
+    requireDbConnection();
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
 
 const requireUserId = (value: unknown) => {
   if (typeof value !== "string" || value.trim().length === 0) {
