@@ -11,11 +11,13 @@ type StoredSchematic = Record<string, unknown> & {
   created_at?: string;
 };
 
-type ApiErrorDetail =
+export type ApiErrorDetail =
   | string
   | {
       error_code?: string;
       message?: string;
+      element_id?: string;
+      attribute?: string;
     }
   | Array<{
       msg?: string;
@@ -34,7 +36,67 @@ export class SchematicApiError extends Error {
   }
 }
 
+export type SimulationNodeResult = {
+  id: string;
+  pressure_head?: number | null;
+  actual_demand?: number | null;
+  outflow?: number | null;
+  hydraulic_head?: number | null;
+  current_volume?: number | null;
+};
+
+export type SimulationLinkResult = {
+  id: string;
+  flow_rate?: number | null;
+  velocity?: number | null;
+  headloss?: number | null;
+  unit_headloss?: number | null;
+  head_added?: number | null;
+  energy?: number | null;
+  pressure_drop?: number | null;
+};
+
+export type SimulationApiResponse = {
+  status: "success" | "non_convergence" | "validation_error";
+  node_results: SimulationNodeResult[];
+  link_results: SimulationLinkResult[];
+  iterations: number;
+  max_head_error: number;
+  max_flow_error: number;
+  warnings?: string[];
+};
+
+export type AnomalyMeasurementInput = {
+  element_id: string;
+  type: "PRESSURE_HEAD" | "FLOW_RATE";
+  value: number;
+};
+
+export type FlaggedPoint = {
+  element_id: string;
+  expected: number;
+  actual: number;
+  residual: number;
+};
+
+export type SuspectSegment = {
+  from: string;
+  to: string;
+  confidence: number;
+  signature: "LEAK" | "BLOCKAGE" | "UNKNOWN";
+  pipe_ids?: string[];
+  path?: string[];
+};
+
+export type AnomalyApiResponse = {
+  flagged_points: FlaggedPoint[];
+  suspect_segments: SuspectSegment[];
+  warnings: string[];
+};
+
 const SCHEMATICS_PATH = "/api/v1/schematics";
+const SIMULATE_PATH = "/api/v1/simulate";
+const ANOMALIES_PATH = "/api/v1/anomalies";
 const SERVER_MANAGED_FIELDS = new Set(["id", "user_id", "created_at", "updated_at"]);
 
 const requestJson = async <T>(path: string, userId: string, init: RequestInit = {}): Promise<T> => {
@@ -101,6 +163,24 @@ export const deleteSchematic = async (userId: string, schematicId: string): Prom
   }
 };
 
+export const runSimulationApi = async (
+  userId: string,
+  payload: Record<string, unknown>,
+): Promise<SimulationApiResponse> =>
+  requestJson<SimulationApiResponse>(SIMULATE_PATH, userId, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+
+export const detectAnomaliesApi = async (
+  userId: string,
+  payload: Record<string, unknown>,
+): Promise<AnomalyApiResponse> =>
+  requestJson<AnomalyApiResponse>(ANOMALIES_PATH, userId, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+
 export const clearLocalSchematicLibrary = () => {
   // Kept as a no-op compatibility hook for older tests and manual browser cleanup.
   // Schematics now persist through the backend repository/database.
@@ -131,7 +211,20 @@ const extractDetail = (body: unknown): ApiErrorDetail | undefined => {
   return typeof body === "string" ? body : undefined;
 };
 
-const formatApiError = (status: number, detail: ApiErrorDetail | undefined): string => {
+export const formatSchematicError = (error: unknown, fallback: string): string => {
+  if (error instanceof SchematicApiError) {
+    return `${fallback}: ${error.message}`;
+  }
+  if (error instanceof TypeError) {
+    return `${fallback}: backend API is unreachable`;
+  }
+  if (error instanceof Error && error.message) {
+    return `${fallback}: ${error.message}`;
+  }
+  return fallback;
+};
+
+export const formatApiError = (status: number, detail: ApiErrorDetail | undefined): string => {
   if (typeof detail === "string") return detail;
   if (Array.isArray(detail)) {
     const message = detail

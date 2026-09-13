@@ -6,12 +6,16 @@ import {
   type KeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+
+import Modal from "@/components/modal/page";
 
 import {
   fitToView,
@@ -21,10 +25,14 @@ import {
 
 import {
   deleteSchematic as deleteStoredSchematic,
-  listSchematics,
   loadSchematic as loadStoredSchematic,
   saveSchematic as saveStoredSchematic,
+  runSimulationApi,
+  detectAnomaliesApi,
   SchematicApiError,
+  formatSchematicError,
+  type ApiErrorDetail,
+  type AnomalyApiResponse,
 } from "../../lib/builder-storage";
 
 // Elements, types and necessary variables
@@ -63,6 +71,15 @@ type CurvePoint = {
   headloss?: string;
 };
 
+type Measurement = {
+  id: string;
+  element_id: string;
+  element_type: "NODE" | "LINK";
+  measurement_type: "PRESSURE_HEAD" | "FLOW_RATE";
+  value: number;
+  unit: string;
+};
+
 type SchematicModel = {
   id?: string;
   user_id?: string;
@@ -71,7 +88,7 @@ type SchematicModel = {
   name: string;
   nodes: BuilderNode[];
   links: BuilderLink[];
-  measurements: unknown[];
+  measurements: Measurement[];
   canvas_state: { zoom: number; pan: { x: number; y: number } };
   thresholds: {
     threshold_pressure_pct: number;
@@ -123,12 +140,28 @@ type DragState =
 type Point = { x: number; y: number };
 type ContextMenuState = { x: number; y: number; selection: Selection } | null;
 
+type NavigationGuardState =
+  | { kind: "new" }
+  | { kind: "load"; id: string }
+  | { kind: "navigate"; href: string }
+  | null;
+
+type SaveErrorItem = {
+  elementId: string;
+  label: string;
+  type: string;
+  field: string;
+  message: string;
+  kind: "node" | "link";
+};
+
 const MIN_ZOOM = 50;
 const MAX_ZOOM = 200;
 const ZOOM_STEP = 10;
 const SNAP_PX = 10;
 const HISTORY_LIMIT = 60;
 const RECOVERY_KEY = "audrolics.builder.recovery";
+const DEV_USER_ID = "dev-user";
 
 const nodeTools: {
   type: NodeType;
@@ -152,14 +185,14 @@ const linkTools: {
   code: string;
   detail: string;
 }[] = [
-  { type: "PIPE", label: "Pipe", code: "P", detail: "Straight line" },
-  { type: "PUMP", label: "Pump", code: "PU", detail: "Pump symbol" },
-  { type: "VALVE", label: "Valve", code: "V", detail: "Typed valve" },
+  { type: "PIPE", label: "Pipe", code: "P", detail: "Connects two nodes" },
+  { type: "PUMP", label: "Pump", code: "PU", detail: "Inline device — place between Junctions" },
+  { type: "VALVE", label: "Valve", code: "V", detail: "Inline device — place between Junctions" },
   {
     type: "FILTER",
     label: "Strainer / Filter",
     code: "F",
-    detail: "Dashed diamond",
+    detail: "Inline device — place between Junctions",
   },
 ];
 
@@ -209,7 +242,10 @@ const clamp = (value: number, min: number, max: number) =>
   Math.min(Math.max(value, min), max);
 const id = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
 
-export default function BuilderPage() {
+export function BuilderPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
   const [model, setModel] = useState(defaultModel);
   const [history, setHistory] = useState<HistoryState>({
     past: [],
@@ -227,11 +263,6 @@ export default function BuilderPage() {
   const [isSpacePressed, setIsSpacePressed] = useState(false);
   const [touched, setTouched] = useState<Set<string>>(new Set());
   const [showAllErrors, setShowAllErrors] = useState(false);
-  const [devUserId, setDevUserId] = useState("dev-user");
-  const [schematicList, setSchematicList] = useState<
-    { id: string; name: string; updated_at: string }[]
-  >([]);
-  const [selectedSavedSchematicId, setSelectedSavedSchematicId] = useState("");
   const [statusMessage, setStatusMessage] = useState("Ready to build");
   const [rightPanelWidth, setRightPanelWidth] = useState(340);
   const [isResizingPanel, setIsResizingPanel] = useState(false);
@@ -244,6 +275,18 @@ export default function BuilderPage() {
   const [pendingSavedDelete, setPendingSavedDelete] = useState<string | null>(
     null,
   );
+  const [navigationGuard, setNavigationGuard] =
+    useState<NavigationGuardState>(null);
+  const [errorModalOpen, setErrorModalOpen] = useState(false);
+  const [errorModalTitle, setErrorModalTitle] = useState("Unable to save schematic");
+  const [errorModalItems, setErrorModalItems] = useState<SaveErrorItem[]>([]);
+  const [errorModalGeneral, setErrorModalGeneral] = useState<string[]>([]);
+  const [simulationRunning, setSimulationRunning] = useState(false);
+  const [anomalyRunning, setAnomalyRunning] = useState(false);
+  const [anomalyResult, setAnomalyResult] = useState<AnomalyApiResponse | null>(
+    null,
+  );
+
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   // Node dragging updates live without pushing every pointer move into history.
@@ -259,6 +302,10 @@ export default function BuilderPage() {
       ? model.links.find((link) => link.id === selection[0].id)
       : undefined;
   const validation = useMemo(() => validateModel(model), [model]);
+  const isDirty = useMemo(
+    () => JSON.stringify(toApiPayload(model)) !== lastSavedSnapshot,
+    [model, lastSavedSnapshot],
+  );
   const zoomFactor = model.canvas_state.zoom / 100;
   const transform = `translate(${model.canvas_state.pan.x} ${model.canvas_state.pan.y}) scale(${zoomFactor})`;
   const isPanning = panState !== null;
@@ -279,39 +326,20 @@ export default function BuilderPage() {
     }));
   }, []);
 
+  // Deep-link loading on mount
   useEffect(() => {
+    const schematicId = searchParams.get("id");
+    if (schematicId) {
+      void performLoadSchematic(schematicId);
+    }
     // Keep the first client render identical to SSR, then offer recovery.
     const timeout = window.setTimeout(() => {
       const recovered = readRecoveryModel();
       if (recovered) setRecoveryCandidate(recovered);
     }, 0);
     return () => window.clearTimeout(timeout);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function fetchSavedSchematics() {
-      try {
-        const schematics = await listSchematics(devUserId);
-        if (cancelled) return;
-        setSchematicList(schematics);
-        if (
-          selectedSavedSchematicId &&
-          !schematics.some(
-            (schematic) => schematic.id === selectedSavedSchematicId,
-          )
-        ) {
-          setSelectedSavedSchematicId("");
-        }
-      } catch {
-        if (!cancelled) setSchematicList([]);
-      }
-    }
-    void fetchSavedSchematics();
-    return () => {
-      cancelled = true;
-    };
-  }, [devUserId, selectedSavedSchematicId]);
 
   useEffect(() => {
     // Autosave-lite from the SRS: local recovery only, separate from explicit Mongo save.
@@ -324,12 +352,12 @@ export default function BuilderPage() {
   useEffect(() => {
     // Warn only after a diagram edit has created undo history.
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
-      if (JSON.stringify(toApiPayload(model)) === lastSavedSnapshot) return;
+      if (!isDirty) return;
       event.preventDefault();
     };
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
-  }, [lastSavedSnapshot, model]);
+  }, [isDirty]);
 
   useEffect(() => {
     if (!isResizingPanel) return;
@@ -485,6 +513,20 @@ export default function BuilderPage() {
     setActiveTool(null);
   }
 
+  function hasOverlappingLink(fromNodeId: string, toNodeId: string): boolean {
+    return model.links.some(
+      (link) =>
+        (link.from_node_id === fromNodeId && link.to_node_id === toNodeId) ||
+        (link.from_node_id === toNodeId && link.to_node_id === fromNodeId),
+    );
+  }
+
+  function cancelPendingLink(message?: string) {
+    setPendingLink(null);
+    setActiveTool(null);
+    if (message) setStatusMessage(message);
+  }
+
   function createLink(type: LinkType, fromNodeId: string, toNodeId: string) {
     // Links are graph edges first and rendered lines second. The saved endpoint
     // ids are the source of truth; points are cached for export/interoperability.
@@ -495,6 +537,7 @@ export default function BuilderPage() {
     const from = model.nodes.find((node) => node.id === fromNodeId);
     const to = model.nodes.find((node) => node.id === toNodeId);
     if (!from || !to) return;
+    const isDuplicate = hasOverlappingLink(fromNodeId, toNodeId);
     const link: BuilderLink = {
       id: id("link"),
       label: nextLabel(type, model),
@@ -515,6 +558,9 @@ export default function BuilderPage() {
     setSelection([{ kind: "link", id: link.id }]);
     setPendingLink(null);
     setActiveTool(null);
+    if (isDuplicate) {
+      setStatusMessage("Warning: duplicate path detected.");
+    }
   }
 
   function handleCanvasPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
@@ -529,6 +575,9 @@ export default function BuilderPage() {
     const world = screenToWorld(event.clientX, event.clientY);
     if (event.button === 1 || (event.button === 0 && isSpacePressed)) {
       event.preventDefault();
+      if (pendingLink) {
+        cancelPendingLink("Link cancelled — E102: dangling endpoint. Snap to a node.");
+      }
       event.currentTarget.setPointerCapture(event.pointerId);
       setPanState({
         pointerId: event.pointerId,
@@ -540,10 +589,14 @@ export default function BuilderPage() {
       return;
     }
     if (isNodeTool(activeTool)) {
+      if (pendingLink) cancelPendingLink();
       createNode(activeTool, world);
       return;
     }
     if (event.button === 0) {
+      if (pendingLink) {
+        cancelPendingLink("Link cancelled — E102: dangling endpoint. Snap to a node.");
+      }
       event.currentTarget.setPointerCapture(event.pointerId);
       setSelection([]);
       setDragState({
@@ -628,8 +681,11 @@ export default function BuilderPage() {
     }
     if (pendingLink) {
       const target = nearestNode(world, pendingLink.fromNodeId);
-      if (target)
+      if (target) {
         createLink(pendingLink.type, pendingLink.fromNodeId, target.id);
+      } else {
+        cancelPendingLink("Link cancelled — E102: dangling endpoint. Snap to a node.");
+      }
     }
   }
 
@@ -642,6 +698,10 @@ export default function BuilderPage() {
     const world = screenToWorld(event.clientX, event.clientY);
     if (isLinkTool(activeTool)) {
       setPendingLink({ type: activeTool, fromNodeId: node.id, cursor: world });
+      return;
+    }
+    if (pendingLink && node.id === pendingLink.fromNodeId) {
+      cancelPendingLink("Link cancelled — cannot connect a node to itself.");
       return;
     }
     if (event.shiftKey) {
@@ -718,6 +778,33 @@ export default function BuilderPage() {
     if (event.key === "Delete" || event.key === "Backspace") {
       event.preventDefault();
       deleteSelection();
+      return;
+    }
+    if (event.key === "Escape") {
+      // Let modal dialogs handle their own Esc; cancel canvas interactions otherwise.
+      if (
+        navigationGuard !== null ||
+        errorModalOpen ||
+        pendingSavedDelete !== null
+      ) {
+        return;
+      }
+      if (pendingLink) {
+        event.preventDefault();
+        cancelPendingLink("Link cancelled.");
+        setContextMenu(null);
+        return;
+      }
+      if (contextMenu) {
+        event.preventDefault();
+        setContextMenu(null);
+        return;
+      }
+      if (activeTool) {
+        event.preventDefault();
+        setActiveTool(null);
+        return;
+      }
       return;
     }
     if (event.key === "+" || event.key === "=") nudgeZoom(ZOOM_STEP);
@@ -891,37 +978,54 @@ export default function BuilderPage() {
     }
   }
 
-  async function saveSchematic() {
-    setShowAllErrors(true);
-    const errors = validateModel(model);
-    if (Object.keys(errors).length > 0) {
-      setStatusMessage(
-        "Fix the highlighted fields before saving this schematic",
-      );
+  // --- Navigation Guard ---
+
+  function guardedStartNewSchematic() {
+    if (isDirty) {
+      setNavigationGuard({ kind: "new" });
       return;
     }
-    try {
-      const saved = await saveStoredSchematic(devUserId, toApiPayload(model));
-      const savedModel = fromApiPayload(saved);
-      setModel(savedModel);
-      setHistory({ past: [], future: [] });
-      setLastSavedSnapshot(JSON.stringify(toApiPayload(savedModel)));
-      setSelectedSavedSchematicId(saved.id);
-      setStatusMessage(`Saved "${saved.name}" to the backend database`);
-    } catch (error) {
-      setStatusMessage(formatSchematicError(error, "Unable to save schematic"));
+    performStartNewSchematic();
+  }
+
+  function guardedNavigate(href: string) {
+    if (isDirty) {
+      setNavigationGuard({ kind: "navigate", href });
+      return;
+    }
+    router.push(href);
+  }
+
+  function performStartNewSchematic() {
+    const blank = defaultModel();
+    setModel(blank);
+    setSelection([]);
+    setHistory({ past: [], future: [] });
+    setTouched(new Set());
+    setShowAllErrors(false);
+    setLastSavedSnapshot(JSON.stringify(toApiPayload(blank)));
+    setStatusMessage("Started a new unsaved schematic");
+    setNavigationGuard(null);
+    // Clear query param if present
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      if (url.searchParams.has("id")) {
+        url.searchParams.delete("id");
+        router.replace(url.pathname + url.search);
+      }
     }
   }
 
-  async function loadSchematic(schematicId: string) {
+  async function performLoadSchematic(schematicId: string) {
     if (!schematicId) return;
     try {
       const loaded = await loadStoredSchematic<SchematicModel>(
-        devUserId,
+        DEV_USER_ID,
         schematicId,
       );
       if (!loaded) {
         setStatusMessage("That saved schematic is no longer available");
+        setNavigationGuard(null);
         return;
       }
       const loadedModel = fromApiPayload(loaded);
@@ -931,24 +1035,298 @@ export default function BuilderPage() {
       setShowAllErrors(false);
       setLastSavedSnapshot(JSON.stringify(toApiPayload(loadedModel)));
       setStatusMessage(`Loaded "${loaded.name}" from the backend database`);
+      setNavigationGuard(null);
+      // Update URL without full navigation
+      router.replace(`/builder?id=${encodeURIComponent(schematicId)}`);
     } catch (error) {
       setStatusMessage(formatSchematicError(error, "Unable to load schematic"));
+      setNavigationGuard(null);
     }
   }
 
-  function startNewSchematic() {
-    const blank = defaultModel();
-    setModel(blank);
-    setSelection([]);
-    setHistory({ past: [], future: [] });
-    setTouched(new Set());
-    setShowAllErrors(false);
-    setSelectedSavedSchematicId("");
-    setLastSavedSnapshot(JSON.stringify(toApiPayload(blank)));
-    setStatusMessage("Started a new unsaved schematic");
+  function performDiscardAndNavigate() {
+    window.localStorage.removeItem(RECOVERY_KEY);
+    if (!navigationGuard) return;
+    if (navigationGuard.kind === "new") {
+      performStartNewSchematic();
+    } else if (navigationGuard.kind === "load") {
+      void performLoadSchematic(navigationGuard.id);
+    } else if (navigationGuard.kind === "navigate") {
+      router.push(navigationGuard.href);
+    }
   }
 
-  async function deleteSchematic() {
+  async function performSaveAndContinue() {
+    const success = await attemptSaveSchematic();
+    if (!success) return;
+    if (!navigationGuard) return;
+    if (navigationGuard.kind === "new") {
+      performStartNewSchematic();
+    } else if (navigationGuard.kind === "load") {
+      void performLoadSchematic(navigationGuard.id);
+    } else if (navigationGuard.kind === "navigate") {
+      router.push(navigationGuard.href);
+    }
+  }
+
+  // --- Save & Validation ---
+
+  async function saveSchematic() {
+    const success = await attemptSaveSchematic();
+    if (success) {
+      setStatusMessage(`Saved "${model.name}" to the backend database`);
+    }
+  }
+
+  async function attemptSaveSchematic(): Promise<boolean> {
+    setShowAllErrors(true);
+    const errors = validateModel(model);
+    const clientErrorItems = buildSaveErrorItems(errors);
+    if (clientErrorItems.length > 0) {
+      setErrorModalTitle("Unable to save schematic");
+      setErrorModalItems(clientErrorItems);
+      setErrorModalGeneral([]);
+      setErrorModalOpen(true);
+      return false;
+    }
+    try {
+      const saved = await saveStoredSchematic(DEV_USER_ID, toApiPayload(model));
+      const savedModel = fromApiPayload(saved);
+      setModel(savedModel);
+      setHistory({ past: [], future: [] });
+      setLastSavedSnapshot(JSON.stringify(toApiPayload(savedModel)));
+      setErrorModalItems([]);
+      setErrorModalGeneral([]);
+      return true;
+    } catch (error) {
+      const general: string[] = [];
+      const items: SaveErrorItem[] = [];
+      if (error instanceof SchematicApiError && error.detail) {
+        const parsed = parseApiErrorDetail(error.detail);
+        general.push(...parsed.general);
+        items.push(...parsed.items);
+      } else {
+        general.push(formatSchematicError(error, "Unable to save schematic"));
+      }
+      setErrorModalTitle("Unable to save schematic");
+      setErrorModalItems(items);
+      setErrorModalGeneral(general);
+      setErrorModalOpen(true);
+      return false;
+    }
+  }
+
+  function buildSaveErrorItems(
+    errors: Record<string, string>,
+  ): SaveErrorItem[] {
+    const items: SaveErrorItem[] = [];
+    for (const [path, message] of Object.entries(errors)) {
+      const [elementId, field] = path.split(".", 2);
+      if (!elementId || !field) continue;
+      const node = model.nodes.find((n) => n.id === elementId);
+      const link = model.links.find((l) => l.id === elementId);
+      if (node) {
+        items.push({
+          elementId,
+          label: node.label,
+          type: node.type,
+          field,
+          message,
+          kind: "node",
+        });
+      } else if (link) {
+        items.push({
+          elementId,
+          label: link.label,
+          type: link.type,
+          field,
+          message,
+          kind: "link",
+        });
+      }
+    }
+    return items;
+  }
+
+  function parseApiErrorDetail(detail: ApiErrorDetail): {
+    general: string[];
+    items: SaveErrorItem[];
+  } {
+    const general: string[] = [];
+    const items: SaveErrorItem[] = [];
+    if (typeof detail === "string") {
+      general.push(detail);
+    } else if (Array.isArray(detail)) {
+      for (const entry of detail) {
+        if (entry.msg) general.push(entry.msg);
+      }
+    } else if (detail && typeof detail === "object") {
+      if (detail.message) {
+        general.push(`[${detail.error_code ?? "E???"}] ${detail.message}`);
+      }
+      if (detail.element_id) {
+        const node = model.nodes.find((n) => n.id === detail.element_id);
+        const link = model.links.find((l) => l.id === detail.element_id);
+        if (node || link) {
+          const el = node ?? link!;
+          items.push({
+            elementId: detail.element_id,
+            label: el.label,
+            type: el.type,
+            field: detail.attribute ?? "",
+            message: detail.message ?? "",
+            kind: node ? "node" : "link",
+          });
+        }
+      }
+    }
+    return { general, items };
+  }
+
+  function handleSaveErrorItemClick(item: SaveErrorItem) {
+    setSelection([{ kind: item.kind, id: item.elementId }]);
+    setErrorModalOpen(false);
+  }
+
+  function showErrorModal(title: string, error: unknown) {
+    const general: string[] = [];
+    const items: SaveErrorItem[] = [];
+    if (error instanceof SchematicApiError && error.detail) {
+      const parsed = parseApiErrorDetail(error.detail);
+      general.push(...parsed.general);
+      items.push(...parsed.items);
+    } else {
+      general.push(formatSchematicError(error, title));
+    }
+    setErrorModalTitle(title);
+    setErrorModalItems(items);
+    setErrorModalGeneral(general);
+    setErrorModalOpen(true);
+  }
+
+  function applySimulationResult(result: {
+    node_results: Array<Record<string, number | null | string> & { id: string }>;
+    link_results: Array<Record<string, number | null | string> & { id: string }>;
+  }) {
+    setModel((current) => ({
+      ...current,
+      nodes: current.nodes.map((node) => {
+        const found = result.node_results.find((n) => n.id === node.id);
+        if (!found) return node;
+        const { id: _id, ...computed } = found;
+        return { ...node, computed: { ...node.computed, ...(computed as Record<string, number | null>) } };
+      }),
+      links: current.links.map((link) => {
+        const found = result.link_results.find((l) => l.id === link.id);
+        if (!found) return link;
+        const { id: _id, ...computed } = found;
+        return { ...link, computed: { ...link.computed, ...(computed as Record<string, number | null>) } };
+      }),
+    }));
+  }
+
+  async function runSimulation() {
+    setShowAllErrors(true);
+    const validationErrors = validateModel(model);
+    if (Object.keys(validationErrors).length > 0) {
+      setErrorModalTitle("Unable to run simulation");
+      setErrorModalItems(buildSaveErrorItems(validationErrors));
+      setErrorModalGeneral([]);
+      setErrorModalOpen(true);
+      return;
+    }
+    setSimulationRunning(true);
+    try {
+      const result = await runSimulationApi(DEV_USER_ID, toApiPayload(model));
+      applySimulationResult(result);
+      setAnomalyResult(null);
+      setLastSavedSnapshot(JSON.stringify(toApiPayload(model)));
+      const warnings = result.warnings?.length ? ` (${result.warnings.length} warning(s))` : "";
+      setStatusMessage(`Simulation complete in ${result.iterations} iterations${warnings}`);
+    } catch (error) {
+      showErrorModal("Unable to run simulation", error);
+    } finally {
+      setSimulationRunning(false);
+    }
+  }
+
+  async function runAnomalyDetection() {
+    setShowAllErrors(true);
+    const validationErrors = validateModel(model);
+    if (Object.keys(validationErrors).length > 0) {
+      setErrorModalTitle("Unable to run anomaly detection");
+      setErrorModalItems(buildSaveErrorItems(validationErrors));
+      setErrorModalGeneral([]);
+      setErrorModalOpen(true);
+      return;
+    }
+    const nodeMeasurements = model.measurements.filter((m) => m.element_type === "NODE");
+    const linkMeasurements = model.measurements.filter((m) => m.element_type === "LINK");
+    if (nodeMeasurements.length + linkMeasurements.length < 1) {
+      setStatusMessage("Add at least one field measurement before running anomaly detection");
+      return;
+    }
+    setAnomalyRunning(true);
+    try {
+      const result = await detectAnomaliesApi(DEV_USER_ID, {
+        ...toApiPayload(model),
+        measurements: model.measurements.map((m) => ({
+          ...m,
+          type: m.measurement_type,
+        })),
+      });
+      setAnomalyResult(result);
+      const segmentCount = result.suspect_segments.length;
+      setStatusMessage(
+        `Anomaly detection complete: ${result.flagged_points.length} flagged point(s), ${segmentCount} suspect segment(s)`,
+      );
+    } catch (error) {
+      showErrorModal("Unable to run anomaly detection", error);
+    } finally {
+      setAnomalyRunning(false);
+    }
+  }
+
+  function measurementForElement(elementId: string) {
+    return model.measurements.find((m) => m.element_id === elementId) ?? null;
+  }
+
+  function setMeasurementForElement(
+    elementId: string,
+    elementType: "NODE" | "LINK",
+    measurementType: "PRESSURE_HEAD" | "FLOW_RATE",
+    value: number | null,
+  ) {
+    const unit = measurementType === "PRESSURE_HEAD" ? "m" : "L/s";
+    setModel((current) => {
+      const existingIndex = current.measurements.findIndex(
+        (m) => m.element_id === elementId,
+      );
+      if (value === null) {
+        if (existingIndex === -1) return current;
+        return {
+          ...current,
+          measurements: current.measurements.filter((_, i) => i !== existingIndex),
+        };
+      }
+      const next: Measurement = {
+        id: existingIndex >= 0 ? current.measurements[existingIndex].id : id("measurement"),
+        element_id: elementId,
+        element_type: elementType,
+        measurement_type: measurementType,
+        value,
+        unit,
+      };
+      if (existingIndex === -1) {
+        return { ...current, measurements: [...current.measurements, next] };
+      }
+      const measurements = [...current.measurements];
+      measurements[existingIndex] = next;
+      return { ...current, measurements };
+    });
+  }
+
+  function deleteSchematic() {
     if (!model.id) return;
     setPendingSavedDelete(model.id);
   }
@@ -956,7 +1334,10 @@ export default function BuilderPage() {
   async function confirmDeleteSchematic() {
     if (!pendingSavedDelete) return;
     try {
-      const deleted = await deleteStoredSchematic(devUserId, pendingSavedDelete);
+      const deleted = await deleteStoredSchematic(
+        DEV_USER_ID,
+        pendingSavedDelete,
+      );
       if (!deleted) {
         setStatusMessage("That saved schematic was already deleted");
         setPendingSavedDelete(null);
@@ -967,9 +1348,16 @@ export default function BuilderPage() {
       setSelection([]);
       setHistory({ past: [], future: [] });
       setLastSavedSnapshot(JSON.stringify(toApiPayload(blank)));
-      setSelectedSavedSchematicId("");
       setPendingSavedDelete(null);
       setStatusMessage("Saved schematic deleted from the backend database");
+      // Clear query param if present
+      if (typeof window !== "undefined") {
+        const url = new URL(window.location.href);
+        if (url.searchParams.has("id")) {
+          url.searchParams.delete("id");
+          router.replace(url.pathname + url.search);
+        }
+      }
     } catch (error) {
       setStatusMessage(
         formatSchematicError(error, "Unable to delete schematic"),
@@ -1079,6 +1467,10 @@ export default function BuilderPage() {
       ? normalizeBox(dragState.start, dragState.current)
       : null;
 
+  const dirtyIndicator = isDirty ? (
+    <span className="ml-2 inline-block h-2 w-2 rounded-full bg-amber-500" aria-label="Unsaved changes" title="Unsaved changes" />
+  ) : null;
+
   return (
     <main className="flex h-screen min-h-180 flex-col overflow-hidden bg-slate-100 text-slate-950">
       <header className="flex h-14 shrink-0 items-center justify-between border-b border-slate-300 bg-white px-4 shadow-sm">
@@ -1087,14 +1479,17 @@ export default function BuilderPage() {
             A
           </div>
           <div className="min-w-0">
-            <input
-              value={model.name}
-              onChange={(event) =>
-                commit((draft) => ({ ...draft, name: event.target.value }))
-              }
-              className="w-52 rounded border border-transparent px-1 text-sm font-semibold focus:border-cyan-700 focus:outline-none"
-              aria-label="Schematic name"
-            />
+            <div className="flex items-center">
+              <input
+                value={model.name}
+                onChange={(event) =>
+                  commit((draft) => ({ ...draft, name: event.target.value }))
+                }
+                className="w-52 rounded border border-transparent px-1 text-sm font-semibold focus:border-cyan-700 focus:outline-none"
+                aria-label="Schematic name"
+              />
+              {dirtyIndicator}
+            </div>
             <p className="truncate text-xs text-slate-500">{statusMessage}</p>
           </div>
         </div>
@@ -1231,20 +1626,23 @@ export default function BuilderPage() {
         </div>
 
         <div className="flex items-center gap-2">
-          <label
-            className="text-xs font-medium text-slate-500"
-            htmlFor="dev-user"
-          >
-            User
-          </label>
-          <input
-            id="dev-user"
-            value={devUserId}
-            onChange={(event) => setDevUserId(event.target.value)}
-            className="h-8 w-24 rounded border border-slate-300 px-2 text-xs"
+          <ToolbarButton
+            label="Library"
+            onClick={() => guardedNavigate("/schematics")}
           />
-          <ToolbarButton label="New" onClick={startNewSchematic} />
+          <div className="mx-1 h-7 w-px bg-slate-300" />
+          <ToolbarButton label="New" onClick={guardedStartNewSchematic} />
           <ToolbarButton label="Save" onClick={saveSchematic} />
+          <ToolbarButton
+            label={simulationRunning ? "Simulating…" : "Simulate"}
+            disabled={simulationRunning}
+            onClick={runSimulation}
+          />
+          <ToolbarButton
+            label={anomalyRunning ? "Detecting…" : "Detect Anomalies"}
+            disabled={anomalyRunning}
+            onClick={runAnomalyDetection}
+          />
           <ToolbarButton
             label="Delete"
             disabled={!model.id}
@@ -1320,35 +1718,6 @@ export default function BuilderPage() {
                 ))}
               </div>
             </section>
-
-            <section className="mt-4 rounded border border-slate-200 bg-white p-3">
-              <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                Saved Schematics
-              </h2>
-              <select
-                className="mt-3 h-9 w-full rounded border border-slate-300 text-sm"
-                onChange={(event) =>
-                  setSelectedSavedSchematicId(event.target.value)
-                }
-                value={selectedSavedSchematicId}
-                aria-label="Saved schematic"
-              >
-                <option value="">Select to load</option>
-                {schematicList.map((schematic) => (
-                  <option key={schematic.id} value={schematic.id}>
-                    {schematic.name}
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                disabled={!selectedSavedSchematicId}
-                onClick={() => loadSchematic(selectedSavedSchematicId)}
-                className="mt-2 h-8 w-full rounded border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 shadow-sm transition hover:border-cyan-700 hover:text-cyan-800 focus-visible:outline focus-visible:outline-offset-2 focus-visible:outline-cyan-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 disabled:shadow-none"
-              >
-                Load selected schematic
-              </button>
-            </section>
           </div>
         </aside>
 
@@ -1359,6 +1728,11 @@ export default function BuilderPage() {
               <span>Wheel: zoom</span>
               <span>Space+drag: pan</span>
               <span>Shift+click: multi-select</span>
+              {isLinkTool(activeTool) && (
+                <span className="text-cyan-700">
+                  Links connect node-to-node. Use Junctions between inline devices.
+                </span>
+              )}
             </div>
             <div className="flex items-center gap-2">
               <ToolbarButton label="PNG" onClick={exportPng} />
@@ -1380,16 +1754,22 @@ export default function BuilderPage() {
                 "application/audrolics-tool",
               ) as ToolType;
               const point = screenToWorld(event.clientX, event.clientY);
-              if (isNodeTool(tool)) createNode(tool, point);
+              if (isNodeTool(tool)) {
+                if (pendingLink) cancelPendingLink();
+                createNode(tool, point);
+              }
               if (isLinkTool(tool)) {
                 const node = nearestNode(point);
-                if (node)
+                if (node) {
                   setPendingLink({
                     type: tool,
                     fromNodeId: node.id,
                     cursor: point,
                   });
-                setActiveTool(tool);
+                  setActiveTool(tool);
+                } else {
+                  setStatusMessage("E102: dangling endpoint. Drop on a node.");
+                }
               }
             }}
             onDragOver={(event) => event.preventDefault()}
@@ -1479,6 +1859,9 @@ export default function BuilderPage() {
                     }
                   />
                 ))}
+                {anomalyResult && (
+                  <AnomalyOverlays model={model} anomalyResult={anomalyResult} />
+                )}
                 {selectionBox && (
                   <rect
                     x={selectionBox.x}
@@ -1531,6 +1914,15 @@ export default function BuilderPage() {
                 onParamChange={(key, value) =>
                   updateNodeParam(selectedNode.id, key, value)
                 }
+                measurement={measurementForElement(selectedNode.id)}
+                onMeasurementChange={(value) =>
+                  setMeasurementForElement(
+                    selectedNode.id,
+                    "NODE",
+                    "PRESSURE_HEAD",
+                    value,
+                  )
+                }
               />
             )}
             {selectedLink && (
@@ -1549,6 +1941,15 @@ export default function BuilderPage() {
                 onRename={renameSelected}
                 onParamChange={(key, value) =>
                   updateLinkParam(selectedLink.id, key, value)
+                }
+                measurement={measurementForElement(selectedLink.id)}
+                onMeasurementChange={(value) =>
+                  setMeasurementForElement(
+                    selectedLink.id,
+                    "LINK",
+                    "FLOW_RATE",
+                    value,
+                  )
                 }
               />
             )}
@@ -1581,32 +1982,126 @@ export default function BuilderPage() {
         </div>
       )}
 
-      {pendingSavedDelete && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/30 p-6">
-          <section className="w-full max-w-sm rounded border border-slate-300 bg-white p-5 shadow-lg">
-            <h2 className="text-base font-semibold text-slate-950">
-              Delete saved schematic?
-            </h2>
-            <p className="mt-2 text-sm leading-6 text-slate-600">
-              This removes the saved copy from this browser. The action cannot
-              be undone.
-            </p>
-            <div className="mt-5 flex justify-end gap-2">
-              <ToolbarButton
-                label="Keep schematic"
-                onClick={() => setPendingSavedDelete(null)}
-              />
-              <button
-                type="button"
-                onClick={confirmDeleteSchematic}
-                className="h-8 rounded border border-red-700 bg-red-700 px-3 text-xs font-medium text-white shadow-sm transition hover:bg-red-800 focus-visible:outline focus-visible:outline-offset-2 focus-visible:outline-red-700"
-              >
-                Delete saved schematic
-              </button>
+      {/* Navigation Guard Modal */}
+      <Modal
+        open={navigationGuard !== null}
+        title="Unsaved changes"
+        onClose={() => setNavigationGuard(null)}
+        actions={
+          <>
+            <ToolbarButton
+              label="Cancel"
+              onClick={() => setNavigationGuard(null)}
+            />
+            <ToolbarButton
+              label="Discard changes"
+              onClick={performDiscardAndNavigate}
+            />
+            <button
+              type="button"
+              onClick={() => void performSaveAndContinue()}
+              className="h-8 rounded border border-cyan-700 bg-cyan-700 px-3 text-xs font-medium text-white shadow-sm transition hover:bg-cyan-800 focus-visible:outline focus-visible:outline-offset-2 focus-visible:outline-cyan-700"
+            >
+              Save and continue
+            </button>
+          </>
+        }
+      >
+        <p>
+          You have unsaved changes in <strong>{model.name}</strong>. Save before
+          leaving, or discard them.
+        </p>
+      </Modal>
+
+      {/* Save Error Modal */}
+      <Modal
+        open={errorModalOpen}
+        title={errorModalTitle}
+        onClose={() => setErrorModalOpen(false)}
+        actions={
+          <>
+            <ToolbarButton
+              label="Close"
+              onClick={() => setErrorModalOpen(false)}
+            />
+          </>
+        }
+      >
+        <div className="space-y-4">
+          {errorModalItems.length > 0 && (
+            <div>
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Validation errors
+              </h3>
+              <ul className="mt-2 space-y-2">
+                {errorModalItems.map((item, index) => (
+                  <li key={index}>
+                    <button
+                      type="button"
+                      onClick={() => handleSaveErrorItemClick(item)}
+                      className="w-full rounded border border-slate-200 bg-slate-50 px-3 py-2 text-left text-sm text-slate-700 transition hover:border-cyan-700 hover:bg-cyan-50"
+                    >
+                      <span className="font-medium">
+                        {item.label} ({item.type})
+                      </span>{" "}
+                      — <span className="text-slate-500">{item.field}</span>:{" "}
+                      <span className="text-red-600">{item.message}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
             </div>
-          </section>
+          )}
+          {errorModalGeneral.length > 0 && (
+            <div>
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Server errors
+              </h3>
+              <ul className="mt-2 space-y-1">
+                {errorModalGeneral.map((msg, index) => (
+                  <li key={index} className="text-sm text-red-600">
+                    {msg}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
-      )}
+      </Modal>
+
+      {/* Delete Confirmation Modal */}
+      <Modal
+        open={pendingSavedDelete !== null}
+        title="Delete saved schematic?"
+        onClose={() => setPendingSavedDelete(null)}
+        actions={
+          <>
+            <ToolbarButton
+              label="Keep schematic"
+              onClick={() => setPendingSavedDelete(null)}
+            />
+            <button
+              type="button"
+              onClick={confirmDeleteSchematic}
+              className="h-8 rounded border border-red-700 bg-red-700 px-3 text-xs font-medium text-white shadow-sm transition hover:bg-red-800 focus-visible:outline focus-visible:outline-offset-2 focus-visible:outline-red-700"
+            >
+              Delete saved schematic
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-2">
+          <p>
+            This will permanently delete the saved schematic from the
+            Express/MongoDB backend. This action cannot be undone.
+          </p>
+          {isDirty && model.id === pendingSavedDelete && (
+            <p className="text-sm font-medium text-amber-700">
+              Warning: You also have unsaved changes that will be lost.
+            </p>
+          )}
+        </div>
+      </Modal>
     </main>
   );
 }
@@ -1889,6 +2384,79 @@ function LinkSymbol({ link, mid }: { link: BuilderLink; mid: Point }) {
   );
 }
 
+function AnomalyOverlays({
+  model,
+  anomalyResult,
+}: {
+  model: SchematicModel;
+  anomalyResult: AnomalyApiResponse;
+}) {
+  const [hovered, setHovered] = useState<number | null>(null);
+  return (
+    <>
+      {anomalyResult.suspect_segments.map((segment, index) => {
+        const path =
+          segment.pipe_ids && segment.pipe_ids.length > 0
+            ? segment.pipe_ids
+            : segment.path && segment.path.length > 0
+              ? segment.path
+              : findLinkPath(segment.from, segment.to, model.links);
+        if (!path || path.length === 0) return null;
+        const points: Point[] = [];
+        for (const linkId of path) {
+          const link = model.links.find((l) => l.id === linkId);
+          if (!link) continue;
+          const from = model.nodes.find((n) => n.id === link.from_node_id);
+          const to = model.nodes.find((n) => n.id === link.to_node_id);
+          if (!from || !to) continue;
+          points.push(from, to);
+        }
+        if (points.length < 2) return null;
+        const d = points
+          .map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`)
+          .join(" ");
+        const mid = points[Math.floor(points.length / 2)];
+        const color = segment.signature === "LEAK" ? "#ef4444" : "#f97316";
+        return (
+          <g key={index} onMouseEnter={() => setHovered(index)} onMouseLeave={() => setHovered(null)}>
+            <path
+              d={d}
+              fill="none"
+              stroke={color}
+              strokeWidth="6"
+              strokeDasharray="6 4"
+              opacity="0.6"
+              pointerEvents="all"
+              style={{ cursor: "pointer" }}
+            />
+            {hovered === index && (
+              <g>
+                <rect
+                  x={mid.x + 8}
+                  y={mid.y - 38}
+                  width="160"
+                  height="34"
+                  rx="4"
+                  fill="rgba(15, 23, 42, 0.9)"
+                />
+                <text
+                  x={mid.x + 16}
+                  y={mid.y - 18}
+                  fill="white"
+                  fontSize="11"
+                  fontWeight="600"
+                >
+                  {segment.signature} — {Math.round(segment.confidence)}% confidence
+                </text>
+              </g>
+            )}
+          </g>
+        );
+      })}
+    </>
+  );
+}
+
 function PendingLink({
   model,
   pendingLink,
@@ -1923,6 +2491,8 @@ function ElementForm(props: {
   onTouch: (field: string) => void;
   onRename: (value: string) => void;
   onParamChange: (key: string, value: FieldValue) => void;
+  measurement?: Measurement | null;
+  onMeasurementChange?: (value: number | null) => void;
 }) {
   const fields = fieldsForType(props.type, props.params);
   return (
@@ -1960,27 +2530,64 @@ function ElementForm(props: {
         </div>
       </section>
 
+      {props.onMeasurementChange && (
+        <section className="rounded border border-slate-200 bg-white">
+          <div className="border-b border-slate-200 px-4 py-3">
+            <h2 className="text-sm font-semibold text-slate-900">
+              Field Measurement
+            </h2>
+          </div>
+          <div className="space-y-3 p-4">
+            <label className="block">
+              <span className="text-xs font-medium text-slate-500">
+                {props.type === "PIPE" || props.type === "PUMP" ||
+                props.type === "VALVE" || props.type === "FILTER"
+                  ? "Flow rate (L/s)"
+                  : "Pressure head (m)"}
+              </span>
+              <input
+                type="number"
+                value={props.measurement?.value ?? ""}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  props.onMeasurementChange!(
+                    value === "" ? null : Number(value),
+                  );
+                }}
+                className="mt-1 h-9 w-full rounded border border-slate-300 px-2 text-sm"
+              />
+            </label>
+          </div>
+        </section>
+      )}
+
       <section className="rounded border border-slate-200 bg-slate-100">
         <div className="border-b border-slate-200 px-4 py-3">
           <h2 className="text-sm font-semibold text-slate-900">
             Computed Results
           </h2>
           <p className="mt-1 text-xs text-slate-500">
-            Read-only until simulation is implemented.
+            Read-only simulation outputs.
           </p>
         </div>
         <div className="space-y-2 p-4">
-          {Object.keys(computedForType(props.type)).map((key) => (
-            <div
-              key={key}
-              className="flex justify-between rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs"
-            >
-              <span className="font-medium text-slate-600">
-                {labelize(key)}
-              </span>
-              <span className="text-slate-400">Pending</span>
-            </div>
-          ))}
+          {Object.keys(computedForType(props.type)).map((key) => {
+            const value = props.computed[key];
+            const display = value === null || value === undefined ? "Pending" : String(value);
+            return (
+              <div
+                key={key}
+                className="flex justify-between rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs"
+              >
+                <span className="font-medium text-slate-600">
+                  {labelize(key)}
+                </span>
+                <span className={value === null || value === undefined ? "text-slate-400" : "text-slate-800"}>
+                  {display}
+                </span>
+              </div>
+            );
+          })}
         </div>
       </section>
     </div>
@@ -2459,17 +3066,37 @@ function fromApiPayload(
   };
 }
 
-function formatSchematicError(error: unknown, fallback: string) {
-  if (error instanceof SchematicApiError) {
-    return `${fallback}: ${error.message}`;
+function findLinkPath(
+  fromNodeId: string,
+  toNodeId: string,
+  links: BuilderLink[],
+): string[] | null {
+  const adjacency = new Map<string, string[]>();
+  for (const link of links) {
+    if (!link.from_node_id || !link.to_node_id) continue;
+    const list = adjacency.get(link.from_node_id) ?? [];
+    list.push(link.id);
+    adjacency.set(link.from_node_id, list);
+    const reverse = adjacency.get(link.to_node_id) ?? [];
+    reverse.push(link.id);
+    adjacency.set(link.to_node_id, reverse);
   }
-  if (error instanceof TypeError) {
-    return `${fallback}: backend API is unreachable`;
+  const visitedNodes = new Set<string>();
+  const queue: { nodeId: string; path: string[] }[] = [{ nodeId: fromNodeId, path: [] }];
+  while (queue.length > 0) {
+    const { nodeId, path } = queue.shift()!;
+    if (nodeId === toNodeId) return path;
+    if (visitedNodes.has(nodeId)) continue;
+    visitedNodes.add(nodeId);
+    for (const linkId of adjacency.get(nodeId) ?? []) {
+      const link = links.find((l) => l.id === linkId);
+      if (!link) continue;
+      const nextNodeId = link.from_node_id === nodeId ? link.to_node_id : link.from_node_id;
+      if (!nextNodeId) continue;
+      queue.push({ nodeId: nextNodeId, path: [...path, linkId] });
+    }
   }
-  if (error instanceof Error && error.message) {
-    return `${fallback}: ${error.message}`;
-  }
-  return fallback;
+  return null;
 }
 
 function normalizeParams(params: InputParams): InputParams {
@@ -2560,4 +3187,12 @@ function downloadBlob(filename: string, blob: Blob) {
   anchor.download = filename.replaceAll(" ", "-").toLowerCase();
   anchor.click();
   URL.revokeObjectURL(url);
+}
+
+export default function BuilderPageWrapper() {
+  return (
+    <Suspense fallback={<div className="flex h-screen items-center justify-center bg-slate-100 text-slate-600">Loading builder…</div>}>
+      <BuilderPage />
+    </Suspense>
+  );
 }

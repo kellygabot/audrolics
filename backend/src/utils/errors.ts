@@ -3,12 +3,22 @@ import type { NextFunction, Request, Response } from "express";
 export class ApiError extends Error {
   status: number;
   errorCode: string;
+  elementId?: string;
+  attribute?: string;
 
-  constructor(status: number, errorCode: string, message: string) {
+  constructor(
+    status: number,
+    errorCode: string,
+    message: string,
+    elementId?: string,
+    attribute?: string,
+  ) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.errorCode = errorCode;
+    this.elementId = elementId;
+    this.attribute = attribute;
   }
 }
 
@@ -19,12 +29,13 @@ export const errorHandler = (
   _next: NextFunction,
 ) => {
   if (error instanceof ApiError) {
-    response.status(error.status).json({
-      detail: {
-        error_code: error.errorCode,
-        message: error.message,
-      },
-    });
+    const detail: Record<string, unknown> = {
+      error_code: error.errorCode,
+      message: error.message,
+    };
+    if (error.elementId) detail.element_id = error.elementId;
+    if (error.attribute) detail.attribute = error.attribute;
+    response.status(error.status).json({ detail });
     return;
   }
 

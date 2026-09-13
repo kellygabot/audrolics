@@ -2,7 +2,9 @@ import cors from "cors";
 import express from "express";
 
 import { config } from "./config/env.js";
+import { anomaliesRouter } from "./routes/anomalies.js";
 import { schematicsRouter } from "./routes/schematics.js";
+import { simulationRouter } from "./routes/simulation.js";
 import { errorHandler } from "./utils/errors.js";
 
 export const createApp = () => {
@@ -24,6 +26,8 @@ export const createApp = () => {
   // keep this mounted path stable because the Next.js builder rewrites
   // same-origin /api/* requests to this Express backend.
   app.use("/api/v1/schematics", schematicsRouter);
+  app.use("/api/v1/simulate", simulationRouter);
+  app.use("/api/v1/anomalies", anomaliesRouter);
 
   app.use(errorHandler);
 
