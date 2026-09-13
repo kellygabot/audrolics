@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
-import BuilderPage from '@/app/builder/page'
+import { BuilderPage } from '@/app/builder/page'
 
 const jsonResponse = (body: unknown, init: ResponseInit = {}) =>
     new Response(JSON.stringify(body), {
@@ -48,7 +48,7 @@ describe('BuilderPage', () => {
 
         expect(screen.getByRole('button', { name: /save/i })).toBeInTheDocument()
         expect(screen.getByLabelText(/line color/i)).toBeInTheDocument()
-        expect(screen.getByText(/strainer \/ filter/i)).toBeInTheDocument()
+        expect(screen.getByText(/strainer settings/i)).toBeInTheDocument()
     })
 
     it('creates pipes with hydraulic defaults', () => {
@@ -74,19 +74,20 @@ describe('BuilderPage', () => {
         expect(view.getByRole('combobox', { name: /status/i })).toHaveValue('OPEN')
     })
 
-    it('loads saved schematics after a page refresh', async () => {
-        vi.mocked(fetch).mockResolvedValueOnce(
-            jsonResponse([
-                {
-                    id: 'schematic-1',
-                    name: 'Saved field segment',
-                    updated_at: '2026-08-26T00:00:00Z',
-                },
-            ]),
-        )
-
+    it('shows dirty indicator after edits', () => {
         render(<BuilderPage />)
+        const nameInput = screen.getByRole('textbox', { name: /schematic name/i })
+        fireEvent.change(nameInput, { target: { value: 'Renamed schematic' } })
+        expect(screen.getByLabelText(/unsaved changes/i)).toBeInTheDocument()
+    })
 
-        expect(await screen.findByText('Saved field segment')).toBeInTheDocument()
+    it('shows navigation guard when starting new with dirty state', () => {
+        render(<BuilderPage />)
+        const nameInput = screen.getByRole('textbox', { name: /schematic name/i })
+        fireEvent.change(nameInput, { target: { value: 'Renamed schematic' } })
+
+        fireEvent.click(screen.getByRole('button', { name: /new/i }))
+        expect(screen.getByRole('dialog')).toBeInTheDocument()
+        expect(screen.getByText(/save before leaving/i)).toBeInTheDocument()
     })
 })

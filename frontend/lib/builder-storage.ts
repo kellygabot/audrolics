@@ -11,11 +11,13 @@ type StoredSchematic = Record<string, unknown> & {
   created_at?: string;
 };
 
-type ApiErrorDetail =
+export type ApiErrorDetail =
   | string
   | {
       error_code?: string;
       message?: string;
+      element_id?: string;
+      attribute?: string;
     }
   | Array<{
       msg?: string;
@@ -131,7 +133,20 @@ const extractDetail = (body: unknown): ApiErrorDetail | undefined => {
   return typeof body === "string" ? body : undefined;
 };
 
-const formatApiError = (status: number, detail: ApiErrorDetail | undefined): string => {
+export const formatSchematicError = (error: unknown, fallback: string): string => {
+  if (error instanceof SchematicApiError) {
+    return `${fallback}: ${error.message}`;
+  }
+  if (error instanceof TypeError) {
+    return `${fallback}: backend API is unreachable`;
+  }
+  if (error instanceof Error && error.message) {
+    return `${fallback}: ${error.message}`;
+  }
+  return fallback;
+};
+
+export const formatApiError = (status: number, detail: ApiErrorDetail | undefined): string => {
   if (typeof detail === "string") return detail;
   if (Array.isArray(detail)) {
     const message = detail

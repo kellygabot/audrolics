@@ -8,11 +8,14 @@ interface HeaderProps {
 
 export default function Header({ onOpenAuth }: HeaderProps) {
   return (
-    <main className="h-22 w-full flex bg-background px-6 text-foreground shadow-[0_4px_30px_rgba(0,0,0,0.3)] sticky top-0 z-40 items-center">
+    // Changed <main> to <header> for correct HTML semantics.
+    // Added shrink-0 so it doesn't get squished by flex containers.
+    <header className="h-22 w-full shrink-0 flex bg-background px-6 text-foreground shadow-[0_4px_30px_rgba(0,0,0,0.3)] sticky top-0 z-40 items-center">
       <div className="flex items-center gap-2">
           <Image src="/logo.svg" alt="Logo" width={32} height={32} className="h-8 w-8 ml-4" />
           <h1 className="text-[1.3rem] opacity-66 pl-4 font-poppins">Audrolics</h1>
       </div>
+      
       <div className="flex items-center gap-2 ml-auto">
         <button 
           onClick={() => onOpenAuth?.('signup')} 
@@ -27,6 +30,6 @@ export default function Header({ onOpenAuth }: HeaderProps) {
           Log in
         </button>
       </div>
-    </main>
+    </header>
   );
 }

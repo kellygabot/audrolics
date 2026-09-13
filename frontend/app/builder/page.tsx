@@ -6,12 +6,16 @@ import {
   type KeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+
+import Modal from "@/components/modal/page";
 
 import {
   fitToView,
@@ -21,10 +25,11 @@ import {
 
 import {
   deleteSchematic as deleteStoredSchematic,
-  listSchematics,
   loadSchematic as loadStoredSchematic,
   saveSchematic as saveStoredSchematic,
   SchematicApiError,
+  formatSchematicError,
+  type ApiErrorDetail,
 } from "../../lib/builder-storage";
 
 // Elements, types and necessary variables
@@ -123,12 +128,28 @@ type DragState =
 type Point = { x: number; y: number };
 type ContextMenuState = { x: number; y: number; selection: Selection } | null;
 
+type NavigationGuardState =
+  | { kind: "new" }
+  | { kind: "load"; id: string }
+  | { kind: "navigate"; href: string }
+  | null;
+
+type SaveErrorItem = {
+  elementId: string;
+  label: string;
+  type: string;
+  field: string;
+  message: string;
+  kind: "node" | "link";
+};
+
 const MIN_ZOOM = 50;
 const MAX_ZOOM = 200;
 const ZOOM_STEP = 10;
 const SNAP_PX = 10;
 const HISTORY_LIMIT = 60;
 const RECOVERY_KEY = "audrolics.builder.recovery";
+const DEV_USER_ID = "dev-user";
 
 const nodeTools: {
   type: NodeType;
@@ -209,7 +230,10 @@ const clamp = (value: number, min: number, max: number) =>
   Math.min(Math.max(value, min), max);
 const id = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
 
-export default function BuilderPage() {
+export function BuilderPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
   const [model, setModel] = useState(defaultModel);
   const [history, setHistory] = useState<HistoryState>({
     past: [],
@@ -227,11 +251,6 @@ export default function BuilderPage() {
   const [isSpacePressed, setIsSpacePressed] = useState(false);
   const [touched, setTouched] = useState<Set<string>>(new Set());
   const [showAllErrors, setShowAllErrors] = useState(false);
-  const [devUserId, setDevUserId] = useState("dev-user");
-  const [schematicList, setSchematicList] = useState<
-    { id: string; name: string; updated_at: string }[]
-  >([]);
-  const [selectedSavedSchematicId, setSelectedSavedSchematicId] = useState("");
   const [statusMessage, setStatusMessage] = useState("Ready to build");
   const [rightPanelWidth, setRightPanelWidth] = useState(340);
   const [isResizingPanel, setIsResizingPanel] = useState(false);
@@ -244,6 +263,12 @@ export default function BuilderPage() {
   const [pendingSavedDelete, setPendingSavedDelete] = useState<string | null>(
     null,
   );
+  const [navigationGuard, setNavigationGuard] =
+    useState<NavigationGuardState>(null);
+  const [saveErrorModalOpen, setSaveErrorModalOpen] = useState(false);
+  const [saveErrorItems, setSaveErrorItems] = useState<SaveErrorItem[]>([]);
+  const [saveErrorGeneral, setSaveErrorGeneral] = useState<string[]>([]);
+
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   // Node dragging updates live without pushing every pointer move into history.
@@ -259,6 +284,10 @@ export default function BuilderPage() {
       ? model.links.find((link) => link.id === selection[0].id)
       : undefined;
   const validation = useMemo(() => validateModel(model), [model]);
+  const isDirty = useMemo(
+    () => JSON.stringify(toApiPayload(model)) !== lastSavedSnapshot,
+    [model, lastSavedSnapshot],
+  );
   const zoomFactor = model.canvas_state.zoom / 100;
   const transform = `translate(${model.canvas_state.pan.x} ${model.canvas_state.pan.y}) scale(${zoomFactor})`;
   const isPanning = panState !== null;
@@ -279,39 +308,20 @@ export default function BuilderPage() {
     }));
   }, []);
 
+  // Deep-link loading on mount
   useEffect(() => {
+    const schematicId = searchParams.get("id");
+    if (schematicId) {
+      void performLoadSchematic(schematicId);
+    }
     // Keep the first client render identical to SSR, then offer recovery.
     const timeout = window.setTimeout(() => {
       const recovered = readRecoveryModel();
       if (recovered) setRecoveryCandidate(recovered);
     }, 0);
     return () => window.clearTimeout(timeout);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function fetchSavedSchematics() {
-      try {
-        const schematics = await listSchematics(devUserId);
-        if (cancelled) return;
-        setSchematicList(schematics);
-        if (
-          selectedSavedSchematicId &&
-          !schematics.some(
-            (schematic) => schematic.id === selectedSavedSchematicId,
-          )
-        ) {
-          setSelectedSavedSchematicId("");
-        }
-      } catch {
-        if (!cancelled) setSchematicList([]);
-      }
-    }
-    void fetchSavedSchematics();
-    return () => {
-      cancelled = true;
-    };
-  }, [devUserId, selectedSavedSchematicId]);
 
   useEffect(() => {
     // Autosave-lite from the SRS: local recovery only, separate from explicit Mongo save.
@@ -324,12 +334,12 @@ export default function BuilderPage() {
   useEffect(() => {
     // Warn only after a diagram edit has created undo history.
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
-      if (JSON.stringify(toApiPayload(model)) === lastSavedSnapshot) return;
+      if (!isDirty) return;
       event.preventDefault();
     };
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
-  }, [lastSavedSnapshot, model]);
+  }, [isDirty]);
 
   useEffect(() => {
     if (!isResizingPanel) return;
@@ -891,37 +901,54 @@ export default function BuilderPage() {
     }
   }
 
-  async function saveSchematic() {
-    setShowAllErrors(true);
-    const errors = validateModel(model);
-    if (Object.keys(errors).length > 0) {
-      setStatusMessage(
-        "Fix the highlighted fields before saving this schematic",
-      );
+  // --- Navigation Guard ---
+
+  function guardedStartNewSchematic() {
+    if (isDirty) {
+      setNavigationGuard({ kind: "new" });
       return;
     }
-    try {
-      const saved = await saveStoredSchematic(devUserId, toApiPayload(model));
-      const savedModel = fromApiPayload(saved);
-      setModel(savedModel);
-      setHistory({ past: [], future: [] });
-      setLastSavedSnapshot(JSON.stringify(toApiPayload(savedModel)));
-      setSelectedSavedSchematicId(saved.id);
-      setStatusMessage(`Saved "${saved.name}" to the backend database`);
-    } catch (error) {
-      setStatusMessage(formatSchematicError(error, "Unable to save schematic"));
+    performStartNewSchematic();
+  }
+
+  function guardedNavigate(href: string) {
+    if (isDirty) {
+      setNavigationGuard({ kind: "navigate", href });
+      return;
+    }
+    router.push(href);
+  }
+
+  function performStartNewSchematic() {
+    const blank = defaultModel();
+    setModel(blank);
+    setSelection([]);
+    setHistory({ past: [], future: [] });
+    setTouched(new Set());
+    setShowAllErrors(false);
+    setLastSavedSnapshot(JSON.stringify(toApiPayload(blank)));
+    setStatusMessage("Started a new unsaved schematic");
+    setNavigationGuard(null);
+    // Clear query param if present
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      if (url.searchParams.has("id")) {
+        url.searchParams.delete("id");
+        router.replace(url.pathname + url.search);
+      }
     }
   }
 
-  async function loadSchematic(schematicId: string) {
+  async function performLoadSchematic(schematicId: string) {
     if (!schematicId) return;
     try {
       const loaded = await loadStoredSchematic<SchematicModel>(
-        devUserId,
+        DEV_USER_ID,
         schematicId,
       );
       if (!loaded) {
         setStatusMessage("That saved schematic is no longer available");
+        setNavigationGuard(null);
         return;
       }
       const loadedModel = fromApiPayload(loaded);
@@ -931,24 +958,158 @@ export default function BuilderPage() {
       setShowAllErrors(false);
       setLastSavedSnapshot(JSON.stringify(toApiPayload(loadedModel)));
       setStatusMessage(`Loaded "${loaded.name}" from the backend database`);
+      setNavigationGuard(null);
+      // Update URL without full navigation
+      router.replace(`/builder?id=${encodeURIComponent(schematicId)}`);
     } catch (error) {
       setStatusMessage(formatSchematicError(error, "Unable to load schematic"));
+      setNavigationGuard(null);
     }
   }
 
-  function startNewSchematic() {
-    const blank = defaultModel();
-    setModel(blank);
-    setSelection([]);
-    setHistory({ past: [], future: [] });
-    setTouched(new Set());
-    setShowAllErrors(false);
-    setSelectedSavedSchematicId("");
-    setLastSavedSnapshot(JSON.stringify(toApiPayload(blank)));
-    setStatusMessage("Started a new unsaved schematic");
+  function performDiscardAndNavigate() {
+    window.localStorage.removeItem(RECOVERY_KEY);
+    if (!navigationGuard) return;
+    if (navigationGuard.kind === "new") {
+      performStartNewSchematic();
+    } else if (navigationGuard.kind === "load") {
+      void performLoadSchematic(navigationGuard.id);
+    } else if (navigationGuard.kind === "navigate") {
+      router.push(navigationGuard.href);
+    }
   }
 
-  async function deleteSchematic() {
+  async function performSaveAndContinue() {
+    const success = await attemptSaveSchematic();
+    if (!success) return;
+    if (!navigationGuard) return;
+    if (navigationGuard.kind === "new") {
+      performStartNewSchematic();
+    } else if (navigationGuard.kind === "load") {
+      void performLoadSchematic(navigationGuard.id);
+    } else if (navigationGuard.kind === "navigate") {
+      router.push(navigationGuard.href);
+    }
+  }
+
+  // --- Save & Validation ---
+
+  async function saveSchematic() {
+    const success = await attemptSaveSchematic();
+    if (success) {
+      setStatusMessage(`Saved "${model.name}" to the backend database`);
+    }
+  }
+
+  async function attemptSaveSchematic(): Promise<boolean> {
+    setShowAllErrors(true);
+    const errors = validateModel(model);
+    const clientErrorItems = buildSaveErrorItems(errors);
+    if (clientErrorItems.length > 0) {
+      setSaveErrorItems(clientErrorItems);
+      setSaveErrorGeneral([]);
+      setSaveErrorModalOpen(true);
+      return false;
+    }
+    try {
+      const saved = await saveStoredSchematic(DEV_USER_ID, toApiPayload(model));
+      const savedModel = fromApiPayload(saved);
+      setModel(savedModel);
+      setHistory({ past: [], future: [] });
+      setLastSavedSnapshot(JSON.stringify(toApiPayload(savedModel)));
+      setSaveErrorItems([]);
+      setSaveErrorGeneral([]);
+      return true;
+    } catch (error) {
+      const general: string[] = [];
+      const items: SaveErrorItem[] = [];
+      if (error instanceof SchematicApiError && error.detail) {
+        const parsed = parseApiErrorDetail(error.detail);
+        general.push(...parsed.general);
+        items.push(...parsed.items);
+      } else {
+        general.push(formatSchematicError(error, "Unable to save schematic"));
+      }
+      setSaveErrorItems(items);
+      setSaveErrorGeneral(general);
+      setSaveErrorModalOpen(true);
+      return false;
+    }
+  }
+
+  function buildSaveErrorItems(
+    errors: Record<string, string>,
+  ): SaveErrorItem[] {
+    const items: SaveErrorItem[] = [];
+    for (const [path, message] of Object.entries(errors)) {
+      const [elementId, field] = path.split(".", 2);
+      if (!elementId || !field) continue;
+      const node = model.nodes.find((n) => n.id === elementId);
+      const link = model.links.find((l) => l.id === elementId);
+      if (node) {
+        items.push({
+          elementId,
+          label: node.label,
+          type: node.type,
+          field,
+          message,
+          kind: "node",
+        });
+      } else if (link) {
+        items.push({
+          elementId,
+          label: link.label,
+          type: link.type,
+          field,
+          message,
+          kind: "link",
+        });
+      }
+    }
+    return items;
+  }
+
+  function parseApiErrorDetail(detail: ApiErrorDetail): {
+    general: string[];
+    items: SaveErrorItem[];
+  } {
+    const general: string[] = [];
+    const items: SaveErrorItem[] = [];
+    if (typeof detail === "string") {
+      general.push(detail);
+    } else if (Array.isArray(detail)) {
+      for (const entry of detail) {
+        if (entry.msg) general.push(entry.msg);
+      }
+    } else if (detail && typeof detail === "object") {
+      if (detail.message) {
+        general.push(`[${detail.error_code ?? "E???"}] ${detail.message}`);
+      }
+      if (detail.element_id) {
+        const node = model.nodes.find((n) => n.id === detail.element_id);
+        const link = model.links.find((l) => l.id === detail.element_id);
+        if (node || link) {
+          const el = node ?? link!;
+          items.push({
+            elementId: detail.element_id,
+            label: el.label,
+            type: el.type,
+            field: detail.attribute ?? "",
+            message: detail.message ?? "",
+            kind: node ? "node" : "link",
+          });
+        }
+      }
+    }
+    return { general, items };
+  }
+
+  function handleSaveErrorItemClick(item: SaveErrorItem) {
+    setSelection([{ kind: item.kind, id: item.elementId }]);
+    setSaveErrorModalOpen(false);
+  }
+
+  function deleteSchematic() {
     if (!model.id) return;
     setPendingSavedDelete(model.id);
   }
@@ -956,7 +1117,10 @@ export default function BuilderPage() {
   async function confirmDeleteSchematic() {
     if (!pendingSavedDelete) return;
     try {
-      const deleted = await deleteStoredSchematic(devUserId, pendingSavedDelete);
+      const deleted = await deleteStoredSchematic(
+        DEV_USER_ID,
+        pendingSavedDelete,
+      );
       if (!deleted) {
         setStatusMessage("That saved schematic was already deleted");
         setPendingSavedDelete(null);
@@ -967,9 +1131,16 @@ export default function BuilderPage() {
       setSelection([]);
       setHistory({ past: [], future: [] });
       setLastSavedSnapshot(JSON.stringify(toApiPayload(blank)));
-      setSelectedSavedSchematicId("");
       setPendingSavedDelete(null);
       setStatusMessage("Saved schematic deleted from the backend database");
+      // Clear query param if present
+      if (typeof window !== "undefined") {
+        const url = new URL(window.location.href);
+        if (url.searchParams.has("id")) {
+          url.searchParams.delete("id");
+          router.replace(url.pathname + url.search);
+        }
+      }
     } catch (error) {
       setStatusMessage(
         formatSchematicError(error, "Unable to delete schematic"),
@@ -1079,6 +1250,10 @@ export default function BuilderPage() {
       ? normalizeBox(dragState.start, dragState.current)
       : null;
 
+  const dirtyIndicator = isDirty ? (
+    <span className="ml-2 inline-block h-2 w-2 rounded-full bg-amber-500" aria-label="Unsaved changes" title="Unsaved changes" />
+  ) : null;
+
   return (
     <main className="flex h-screen min-h-180 flex-col overflow-hidden bg-slate-100 text-slate-950">
       <header className="flex h-14 shrink-0 items-center justify-between border-b border-slate-300 bg-white px-4 shadow-sm">
@@ -1087,14 +1262,17 @@ export default function BuilderPage() {
             A
           </div>
           <div className="min-w-0">
-            <input
-              value={model.name}
-              onChange={(event) =>
-                commit((draft) => ({ ...draft, name: event.target.value }))
-              }
-              className="w-52 rounded border border-transparent px-1 text-sm font-semibold focus:border-cyan-700 focus:outline-none"
-              aria-label="Schematic name"
-            />
+            <div className="flex items-center">
+              <input
+                value={model.name}
+                onChange={(event) =>
+                  commit((draft) => ({ ...draft, name: event.target.value }))
+                }
+                className="w-52 rounded border border-transparent px-1 text-sm font-semibold focus:border-cyan-700 focus:outline-none"
+                aria-label="Schematic name"
+              />
+              {dirtyIndicator}
+            </div>
             <p className="truncate text-xs text-slate-500">{statusMessage}</p>
           </div>
         </div>
@@ -1231,19 +1409,12 @@ export default function BuilderPage() {
         </div>
 
         <div className="flex items-center gap-2">
-          <label
-            className="text-xs font-medium text-slate-500"
-            htmlFor="dev-user"
-          >
-            User
-          </label>
-          <input
-            id="dev-user"
-            value={devUserId}
-            onChange={(event) => setDevUserId(event.target.value)}
-            className="h-8 w-24 rounded border border-slate-300 px-2 text-xs"
+          <ToolbarButton
+            label="Library"
+            onClick={() => guardedNavigate("/schematics")}
           />
-          <ToolbarButton label="New" onClick={startNewSchematic} />
+          <div className="mx-1 h-7 w-px bg-slate-300" />
+          <ToolbarButton label="New" onClick={guardedStartNewSchematic} />
           <ToolbarButton label="Save" onClick={saveSchematic} />
           <ToolbarButton
             label="Delete"
@@ -1319,35 +1490,6 @@ export default function BuilderPage() {
                   </label>
                 ))}
               </div>
-            </section>
-
-            <section className="mt-4 rounded border border-slate-200 bg-white p-3">
-              <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                Saved Schematics
-              </h2>
-              <select
-                className="mt-3 h-9 w-full rounded border border-slate-300 text-sm"
-                onChange={(event) =>
-                  setSelectedSavedSchematicId(event.target.value)
-                }
-                value={selectedSavedSchematicId}
-                aria-label="Saved schematic"
-              >
-                <option value="">Select to load</option>
-                {schematicList.map((schematic) => (
-                  <option key={schematic.id} value={schematic.id}>
-                    {schematic.name}
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                disabled={!selectedSavedSchematicId}
-                onClick={() => loadSchematic(selectedSavedSchematicId)}
-                className="mt-2 h-8 w-full rounded border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 shadow-sm transition hover:border-cyan-700 hover:text-cyan-800 focus-visible:outline focus-visible:outline-offset-2 focus-visible:outline-cyan-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 disabled:shadow-none"
-              >
-                Load selected schematic
-              </button>
             </section>
           </div>
         </aside>
@@ -1581,32 +1723,126 @@ export default function BuilderPage() {
         </div>
       )}
 
-      {pendingSavedDelete && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/30 p-6">
-          <section className="w-full max-w-sm rounded border border-slate-300 bg-white p-5 shadow-lg">
-            <h2 className="text-base font-semibold text-slate-950">
-              Delete saved schematic?
-            </h2>
-            <p className="mt-2 text-sm leading-6 text-slate-600">
-              This removes the saved copy from this browser. The action cannot
-              be undone.
-            </p>
-            <div className="mt-5 flex justify-end gap-2">
-              <ToolbarButton
-                label="Keep schematic"
-                onClick={() => setPendingSavedDelete(null)}
-              />
-              <button
-                type="button"
-                onClick={confirmDeleteSchematic}
-                className="h-8 rounded border border-red-700 bg-red-700 px-3 text-xs font-medium text-white shadow-sm transition hover:bg-red-800 focus-visible:outline focus-visible:outline-offset-2 focus-visible:outline-red-700"
-              >
-                Delete saved schematic
-              </button>
+      {/* Navigation Guard Modal */}
+      <Modal
+        open={navigationGuard !== null}
+        title="Unsaved changes"
+        onClose={() => setNavigationGuard(null)}
+        actions={
+          <>
+            <ToolbarButton
+              label="Cancel"
+              onClick={() => setNavigationGuard(null)}
+            />
+            <ToolbarButton
+              label="Discard changes"
+              onClick={performDiscardAndNavigate}
+            />
+            <button
+              type="button"
+              onClick={() => void performSaveAndContinue()}
+              className="h-8 rounded border border-cyan-700 bg-cyan-700 px-3 text-xs font-medium text-white shadow-sm transition hover:bg-cyan-800 focus-visible:outline focus-visible:outline-offset-2 focus-visible:outline-cyan-700"
+            >
+              Save and continue
+            </button>
+          </>
+        }
+      >
+        <p>
+          You have unsaved changes in <strong>{model.name}</strong>. Save before
+          leaving, or discard them.
+        </p>
+      </Modal>
+
+      {/* Save Error Modal */}
+      <Modal
+        open={saveErrorModalOpen}
+        title="Unable to save schematic"
+        onClose={() => setSaveErrorModalOpen(false)}
+        actions={
+          <>
+            <ToolbarButton
+              label="Close"
+              onClick={() => setSaveErrorModalOpen(false)}
+            />
+          </>
+        }
+      >
+        <div className="space-y-4">
+          {saveErrorItems.length > 0 && (
+            <div>
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Validation errors
+              </h3>
+              <ul className="mt-2 space-y-2">
+                {saveErrorItems.map((item, index) => (
+                  <li key={index}>
+                    <button
+                      type="button"
+                      onClick={() => handleSaveErrorItemClick(item)}
+                      className="w-full rounded border border-slate-200 bg-slate-50 px-3 py-2 text-left text-sm text-slate-700 transition hover:border-cyan-700 hover:bg-cyan-50"
+                    >
+                      <span className="font-medium">
+                        {item.label} ({item.type})
+                      </span>{" "}
+                      — <span className="text-slate-500">{item.field}</span>:{" "}
+                      <span className="text-red-600">{item.message}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
             </div>
-          </section>
+          )}
+          {saveErrorGeneral.length > 0 && (
+            <div>
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Server errors
+              </h3>
+              <ul className="mt-2 space-y-1">
+                {saveErrorGeneral.map((msg, index) => (
+                  <li key={index} className="text-sm text-red-600">
+                    {msg}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
-      )}
+      </Modal>
+
+      {/* Delete Confirmation Modal */}
+      <Modal
+        open={pendingSavedDelete !== null}
+        title="Delete saved schematic?"
+        onClose={() => setPendingSavedDelete(null)}
+        actions={
+          <>
+            <ToolbarButton
+              label="Keep schematic"
+              onClick={() => setPendingSavedDelete(null)}
+            />
+            <button
+              type="button"
+              onClick={confirmDeleteSchematic}
+              className="h-8 rounded border border-red-700 bg-red-700 px-3 text-xs font-medium text-white shadow-sm transition hover:bg-red-800 focus-visible:outline focus-visible:outline-offset-2 focus-visible:outline-red-700"
+            >
+              Delete saved schematic
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-2">
+          <p>
+            This will permanently delete the saved schematic from the
+            Express/MongoDB backend. This action cannot be undone.
+          </p>
+          {isDirty && model.id === pendingSavedDelete && (
+            <p className="text-sm font-medium text-amber-700">
+              Warning: You also have unsaved changes that will be lost.
+            </p>
+          )}
+        </div>
+      </Modal>
     </main>
   );
 }
@@ -2459,19 +2695,6 @@ function fromApiPayload(
   };
 }
 
-function formatSchematicError(error: unknown, fallback: string) {
-  if (error instanceof SchematicApiError) {
-    return `${fallback}: ${error.message}`;
-  }
-  if (error instanceof TypeError) {
-    return `${fallback}: backend API is unreachable`;
-  }
-  if (error instanceof Error && error.message) {
-    return `${fallback}: ${error.message}`;
-  }
-  return fallback;
-}
-
 function normalizeParams(params: InputParams): InputParams {
   // Form inputs stay as strings for editing. API payloads convert numeric-looking
   // values so backend validation receives numbers instead of DOM strings.
@@ -2560,4 +2783,12 @@ function downloadBlob(filename: string, blob: Blob) {
   anchor.download = filename.replaceAll(" ", "-").toLowerCase();
   anchor.click();
   URL.revokeObjectURL(url);
+}
+
+export default function BuilderPageWrapper() {
+  return (
+    <Suspense fallback={<div className="flex h-screen items-center justify-center bg-slate-100 text-slate-600">Loading builder…</div>}>
+      <BuilderPage />
+    </Suspense>
+  );
 }
