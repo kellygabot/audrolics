@@ -1,134 +1,53 @@
-import type { LinkPayload, NodePayload, SchematicPayload, AnomalyMeasurementInput, AnomalyResult, FlaggedPoint, SuspectSegment } from "../types.js";
-import { isActiveLink } from "../simulation/topology.js";
+/**
+ * ═══════════════════════════════════════════════════════════════
+ * Anomaly Detection — Residual Evaluation & Bracketing Engine
+ * Reference: documents/system_architecture.md §7.2, §10 Step 2.1
+ *            documents/audrolics_software_requirements_specification.md §4, Appendix C
+ * ═══════════════════════════════════════════════════════════════
+ *
+ * CONSUMERS:
+ *   - backend/src/routes/anomalies.ts (POST /api/v1/anomalies)
+ *
+ * LOCALIZATION LOGIC: Moved to `localizer.ts` for single-source-of-truth graph
+ * traversal, leak/blockage classification, and confidence scoring.
+ * This file imports and composes those helpers.
+ */
 
+import type {
+  LinkPayload,
+  NodePayload,
+  SchematicPayload,
+  AnomalyMeasurementInput,
+  AnomalyResult,
+  FlaggedPoint,
+  SuspectSegment,
+} from "../types.js";
+import { buildThresholds, defaultThresholds, getThreshold, type AnomalyThresholds } from "./thresholds.js";
+import {
+  buildGraph,
+  shortestPath,
+  classifySignature,
+  calculateConfidence,
+  type Graph,
+} from "./localizer.js";
+
+/**
+ * Expected value map: element_id -> computed value from simulation.
+ */
 export type ExpectedValueMap = Map<string, number>;
 
-export type AnomalyThresholds = {
-  pressurePct: number;
-  pressureAbs: number;
-  flowPct: number;
-  flowAbs: number;
-};
-
-const defaultThresholds: AnomalyThresholds = {
-  pressurePct: 0.05,
-  pressureAbs: 0.5,
-  flowPct: 0.1,
-  flowAbs: 0.5,
-};
-
-export const buildThresholds = (
-  input?: SchematicPayload["thresholds"],
-): AnomalyThresholds => {
-  if (!input) return defaultThresholds;
-  return {
-    pressurePct: input.threshold_pressure_pct / 100,
-    pressureAbs: input.threshold_pressure_abs,
-    flowPct: input.threshold_flow_pct / 100,
-    flowAbs: input.threshold_flow_abs,
-  };
-};
-
-const getThreshold = (
-  type: "PRESSURE_HEAD" | "FLOW_RATE",
-  expected: number,
-  thresholds: AnomalyThresholds,
-): number => {
-  if (type === "PRESSURE_HEAD") {
-    return Math.max(thresholds.pressurePct * Math.abs(expected), thresholds.pressureAbs);
-  }
-  return Math.max(thresholds.flowPct * Math.abs(expected), thresholds.flowAbs);
-};
-
-type Graph = Map<string, { neighbor: string; linkId: string }[]>;
-
-const buildGraph = (links: LinkPayload[]): Graph => {
-  const graph: Graph = new Map();
-  for (const link of links) {
-    if (!isActiveLink(link)) continue;
-    if (!link.from_node_id || !link.to_node_id) continue;
-    if (!graph.has(link.from_node_id)) graph.set(link.from_node_id, []);
-    if (!graph.has(link.to_node_id)) graph.set(link.to_node_id, []);
-    graph.get(link.from_node_id)!.push({ neighbor: link.to_node_id, linkId: link.id });
-    graph.get(link.to_node_id)!.push({ neighbor: link.from_node_id, linkId: link.id });
-  }
-  return graph;
-};
-
-const shortestPath = (
-  fromId: string,
-  toId: string,
-  graph: Graph,
-): { nodeIds: string[]; linkIds: string[] } | null => {
-  if (fromId === toId) return { nodeIds: [fromId], linkIds: [] };
-  const visited = new Set<string>();
-  const queue: { nodeId: string; path: { nodeId: string; linkId: string }[] }[] = [
-    { nodeId: fromId, path: [] },
-  ];
-  visited.add(fromId);
-
-  while (queue.length > 0) {
-    const { nodeId, path } = queue.shift()!;
-    const neighbors = graph.get(nodeId) ?? [];
-    for (const { neighbor, linkId } of neighbors) {
-      if (visited.has(neighbor)) continue;
-      const newPath = [...path, { nodeId: neighbor, linkId }];
-      if (neighbor === toId) {
-        const nodeIds = [fromId, ...newPath.map((step) => step.nodeId)];
-        const linkIds = newPath.map((step) => step.linkId);
-        return { nodeIds, linkIds };
-      }
-      visited.add(neighbor);
-      queue.push({ nodeId: neighbor, path: newPath });
-    }
-  }
-  return null;
-};
-
-const classifySignature = (
-  residualA: number,
-  residualB: number,
-  pathLinkIds: string[],
-  flaggedByElementId: Map<string, FlaggedPoint>,
-): "LEAK" | "BLOCKAGE" | "UNKNOWN" => {
-  // Look for a flow measurement on the path.
-  let flowResidual: number | null = null;
-  for (const linkId of pathLinkIds) {
-    const flagged = flaggedByElementId.get(linkId);
-    if (flagged && flagged.type === "FLOW_RATE") {
-      flowResidual = flagged.residual;
-      break;
-    }
-  }
-
-  const bothPressureNegative = residualA < 0 && residualB < 0;
-  const blockageForward = residualA > 0 && residualB < 0;
-  const blockageReverse = residualA < 0 && residualB > 0;
-
-  if (bothPressureNegative) {
-    if (flowResidual === null || flowResidual < 0) return "LEAK";
-  }
-  if (blockageForward || blockageReverse) {
-    if (flowResidual === null || flowResidual < 0) return "BLOCKAGE";
-  }
-  return "UNKNOWN";
-};
-
-const calculateConfidence = (
-  flaggedA: FlaggedPoint,
-  flaggedB: FlaggedPoint,
-  thresholds: AnomalyThresholds,
-  pipeCount: number,
-): number => {
-  const avgResidual = (Math.abs(flaggedA.residual) + Math.abs(flaggedB.residual)) / 2;
-  const thresholdA = getThreshold(flaggedA.type, flaggedA.expected, thresholds);
-  const thresholdB = getThreshold(flaggedB.type, flaggedB.expected, thresholds);
-  const avgThreshold = (thresholdA + thresholdB) / 2;
-  const residualScore = Math.min(avgResidual / Math.max(avgThreshold, 1e-9), 2.0) / 2.0;
-  const pipePenalty = 1 / Math.max(pipeCount, 1);
-  return Math.min((residualScore * 0.7 + pipePenalty * 0.3) * 100, 100);
-};
-
+/**
+ * Main anomaly detection entry point.
+ * Computes residuals, flags points exceeding thresholds, finds bracketing
+ * pressure pairs, classifies signatures, and scores confidence.
+ *
+ * @param measurements - Field measurements from telemetry
+ * @param expectedValues - Simulated expected values keyed by element_id
+ * @param nodes - Network nodes (for topology context)
+ * @param links - Network links (for graph traversal)
+ * @param thresholds - Optional schematic-specific thresholds (uses defaults if omitted)
+ * @returns AnomalyResult with flagged points, suspect segments, and warnings
+ */
 export const detectAnomalies = (
   measurements: AnomalyMeasurementInput[],
   expectedValues: ExpectedValueMap,
@@ -224,3 +143,8 @@ export const detectAnomalies = (
     warnings,
   };
 };
+
+// Re-export for consumers that may need defaults directly.
+export { defaultThresholds };
+export { buildThresholds, getThreshold, type AnomalyThresholds } from "./thresholds.js";
+export { buildGraph, shortestPath, classifySignature, calculateConfidence, type Graph, type PathResult, type Signature } from "./localizer.js";
