@@ -1,5 +1,3 @@
-import Image from "next/image";
-
 export default function LandingPage() {
   return (
     // min-h-[calc(100dvh-5.5rem)] calculates exact screen height minus the h-22 header.

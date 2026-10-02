@@ -78,15 +78,15 @@ describe("SchematicsPage", () => {
 
     expect(screen.getByText(/no schematics match/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /clear search/i })).toBeInTheDocument();
-    expect(screen.queryByText("No schematics yet")).not.toBeInTheDocument();
+    expect(screen.queryByText("No Audrolics files created yet")).not.toBeInTheDocument();
   });
 
   it("shows genuine empty state when no items and no query", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse([])));
     render(<SchematicsPage />);
 
-    await screen.findByText("No schematics yet");
-    expect(screen.getByText("No schematics yet")).toBeInTheDocument();
+    await screen.findByText("No Audrolics files created yet");
+    expect(screen.getByText("No Audrolics files created yet")).toBeInTheDocument();
   });
 
   it("New Schematic button is in the body, not the header", async () => {
