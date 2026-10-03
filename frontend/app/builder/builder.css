@@ -1,0 +1,380 @@
+/* Builder presentation only. The JSX still owns every control and value. */
+.builder-page {
+  color: #404044;
+  background: #fff;
+  font-family: var(--font-poppins-next), sans-serif;
+}
+
+.builder-header {
+  height: 72px;
+  min-height: 72px;
+  gap: 22px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-color: #c9c9c9;
+  padding: 0 32px;
+  box-shadow: none;
+  scrollbar-width: thin;
+}
+
+.builder-header > div {
+  flex-shrink: 0;
+}
+
+.builder-header > div:first-child > div:first-child {
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border: 0;
+  background: url("/logo.svg") center / contain no-repeat;
+  color: transparent;
+  font-size: 0;
+}
+
+.builder-header input[aria-label="Schematic name"] {
+  width: 165px;
+  color: #1230e8;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.builder-header input[aria-label="Schematic name"] + span {
+  flex-shrink: 0;
+}
+
+.builder-header > div:first-child p {
+  padding-left: 4px;
+  color: #85858b;
+  font-size: 10px;
+}
+
+.builder-toolbar-button {
+  min-width: 46px;
+  height: 30px;
+  border-color: #b8b8bd;
+  border-radius: 999px;
+  padding: 0 14px;
+  color: #505057;
+  font-size: 11px;
+  font-weight: 400;
+  white-space: nowrap;
+  box-shadow: 0 3px 6px #00000016;
+}
+
+.builder-toolbar-button:hover,
+.builder-toolbar-button:focus-visible {
+  border-color: #112bea;
+  color: #112bea;
+}
+
+.builder-header > div:nth-child(2) {
+  gap: 10px;
+}
+
+.builder-header > div:nth-child(2) > .builder-toolbar-button:first-child,
+.builder-header > div:nth-child(2) > .builder-toolbar-button:nth-child(2) {
+  width: 30px;
+  min-width: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: #112bea;
+  color: #fff;
+  font-size: 0;
+}
+
+.builder-header > div:nth-child(2) > .builder-toolbar-button:first-child::before {
+  content: "↶";
+  font-size: 22px;
+  line-height: 1;
+}
+
+.builder-header > div:nth-child(2) > .builder-toolbar-button:nth-child(2)::before {
+  content: "↷";
+  font-size: 22px;
+  line-height: 1;
+}
+
+.builder-header > div:nth-child(2) > .builder-toolbar-button:disabled {
+  background: #f2f2f2;
+  color: #c9c9c9;
+  box-shadow: none;
+}
+
+.builder-header input[type="range"] {
+  width: 120px;
+  accent-color: #112bea;
+}
+
+.builder-header input[type="number"] {
+  border-color: #b7b7bd;
+  border-radius: 8px;
+  color: #515157;
+}
+
+.builder-header input[type="color"] {
+  border: 0;
+  background: transparent;
+}
+
+.builder-header label,
+.builder-header output {
+  color: #6a6a72;
+  white-space: nowrap;
+}
+
+.builder-header details summary {
+  border-radius: 8px;
+  border-color: #b8b8bd;
+  box-shadow: none;
+}
+
+.builder-palette,
+.builder-inspector {
+  border-color: #c8c8c8;
+}
+
+.builder-panel-heading {
+  min-height: 84px;
+  border-color: #c8c8c8;
+  padding: 15px 28px 13px;
+}
+
+.builder-panel-heading h2 {
+  color: #343438;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+.builder-panel-heading p {
+  margin-top: 2px;
+  color: #929298;
+  font-size: 11px;
+}
+
+.builder-palette > div:last-child {
+  padding: 25px 28px;
+}
+
+.builder-palette-group {
+  margin-bottom: 25px;
+}
+
+.builder-palette-group h2 {
+  margin-bottom: 7px;
+  color: #66666a;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.builder-palette-group > div {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.builder-palette-tool {
+  min-width: 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  border: 0;
+  padding: 0;
+  text-align: center;
+}
+
+.builder-palette-tool:hover,
+.builder-palette-tool[aria-pressed="true"] {
+  background: transparent;
+}
+
+.builder-palette-symbol {
+  width: 61px;
+  height: 61px;
+  border: 1px solid #bdbdc1;
+  border-radius: 6px;
+  background-color: #fff;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 42px 42px;
+  color: transparent;
+  font-size: 0;
+}
+
+.builder-palette-tool:hover .builder-palette-symbol,
+.builder-palette-tool[aria-pressed="true"] .builder-palette-symbol {
+  border-color: #112bea;
+  box-shadow: 0 0 0 2px #112bea22;
+}
+
+.builder-palette-group:first-child .builder-palette-tool:nth-child(1) .builder-palette-symbol { background-image: url("/junction.svg"); }
+.builder-palette-group:first-child .builder-palette-tool:nth-child(2) .builder-palette-symbol { background-image: url("/reservoir.svg"); }
+.builder-palette-group:first-child .builder-palette-tool:nth-child(3) .builder-palette-symbol { background-image: url("/tank.svg"); }
+.builder-palette-group:nth-child(2) .builder-palette-tool:nth-child(1) .builder-palette-symbol { background-image: url("/pipe.svg"); }
+.builder-palette-group:nth-child(2) .builder-palette-tool:nth-child(2) .builder-palette-symbol { background-image: url("/pump.svg"); }
+.builder-palette-group:nth-child(2) .builder-palette-tool:nth-child(3) .builder-palette-symbol { background-image: url("/valve.svg"); }
+.builder-palette-group:nth-child(2) .builder-palette-tool:nth-child(4) .builder-palette-symbol { background-image: url("/strainer.svg"); }
+
+.builder-palette-tool > span:last-child {
+  width: 100%;
+}
+
+.builder-palette-tool > span:last-child > span:first-child {
+  overflow: hidden;
+  color: #77777d;
+  font-size: 9px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.builder-palette-detail {
+  overflow: visible;
+  color: #99999f;
+  font-size: 8px;
+  line-height: 1.2;
+  white-space: normal;
+}
+
+.builder-visibility {
+  margin-top: 14px;
+  border-color: #bcbcc3;
+  border-radius: 16px;
+  background: #f8f9fd;
+  padding: 16px 20px;
+}
+
+.builder-visibility h2 {
+  color: #444449;
+  font-size: 11px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.builder-visibility > div {
+  margin-top: 10px;
+  gap: 7px;
+}
+
+.builder-visibility label {
+  min-height: 28px;
+  border-color: #bcbcc3;
+  border-radius: 999px;
+  padding: 2px 8px 2px 13px;
+  color: #6a6a70;
+  font-size: 11px;
+}
+
+.builder-visibility input {
+  accent-color: #112bea;
+}
+
+.builder-canvas {
+  background: #f8f8f8;
+}
+
+.builder-canvas > div:first-child {
+  height: 62px;
+  border-color: #c8c8c8;
+  background: #fff;
+  padding: 0 22px;
+}
+
+.builder-canvas > div:first-child > div:first-child {
+  gap: 24px;
+  color: #74747a;
+  white-space: nowrap;
+}
+
+.builder-canvas > div:first-child > div:first-child span {
+  font-size: 10px;
+}
+
+.builder-canvas > div:first-child > div:last-child {
+  gap: 10px;
+}
+
+.builder-canvas svg {
+  background: radial-gradient(circle at center, #fff 0%, #fafafa 55%, #eeeeee 100%);
+}
+
+.builder-canvas svg > g > rect:first-child {
+  display: none;
+}
+
+.builder-inspector > div:last-child {
+  padding: 28px 30px;
+}
+
+.builder-inspector .space-y-4 {
+  gap: 14px;
+}
+
+.builder-element-identity,
+.builder-input-parameters,
+.builder-field-measurement,
+.builder-computed-results {
+  border-color: #bcbcc3;
+  border-radius: 12px;
+  background: #f8f9fd;
+  box-shadow: none;
+}
+
+.builder-element-identity {
+  padding: 20px 24px;
+}
+
+.builder-inspector input,
+.builder-inspector select {
+  border-color: #bcbcc3;
+  border-radius: 8px;
+  background: #fff;
+  color: #55555b;
+}
+
+.builder-inspector label > span,
+.builder-element-identity > label,
+.builder-element-identity > p {
+  color: #85858c;
+  font-size: 11px;
+}
+
+.builder-input-parameters > div:first-child,
+.builder-field-measurement > div:first-child,
+.builder-computed-results > div:first-child {
+  border-color: #c8c8ce;
+  padding: 12px 24px;
+}
+
+.builder-input-parameters h2,
+.builder-field-measurement h2,
+.builder-computed-results h2 {
+  color: #3e3e43;
+  font-size: 14px;
+}
+
+.builder-input-parameters > div:last-child,
+.builder-field-measurement > div:last-child,
+.builder-computed-results > div:last-child {
+  padding: 20px 24px;
+}
+
+.builder-computed-results {
+  background: #eef0ff;
+}
+
+.builder-computed-results > div:last-child > div {
+  border-color: #c8c8ce;
+  border-radius: 999px;
+  background: #fff;
+}
+
+@media (max-width: 1400px) {
+  .builder-header { gap: 14px; padding-inline: 18px; }
+  .builder-palette > div:last-child { padding-inline: 16px; }
+  .builder-canvas > div:first-child { gap: 12px; overflow-x: auto; }
+  .builder-canvas > div:first-child > div:first-child { gap: 12px; }
+  .builder-inspector > div:last-child { padding-inline: 18px; }
+}

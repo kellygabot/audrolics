@@ -18,7 +18,7 @@ export default function AuthModal({
 
       {/* Main Container: Uses flex-row for Login, flex-row-reverse for Signup to swap sides */}
       <div 
-        className={`relative z-10 w-[850px] min-h-[550px] bg-white rounded-[3rem] shadow-2xl overflow-hidden flex ${
+        className={`relative z-10 w-212.5 min-h-137.5  bg-white rounded-[3rem] shadow-2xl overflow-hidden flex ${
           mode === "login" ? "flex-row" : "flex-row-reverse"
         }`}
       >

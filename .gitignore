@@ -1,8 +1,3 @@
-# Backend
-__pycache__/
-.venv/
-.pytest_cache/
-
 # backend generated files
 backend/node_modules/
 backend/dist/
@@ -16,3 +11,4 @@ backend/dist/
 .idea/
 .codex
 .agents
+design-qa.md
