@@ -10,6 +10,11 @@ import { errorHandler } from "./utils/errors.js";
 export const createApp = (ensureReady?: () => Promise<void>) => {
   const app = express();
 
+  // This checks that Vercel reached Express even when MongoDB is unavailable.
+  app.get("/api/health", (_request, response) => {
+    response.json({ service: "ok" });
+  });
+
   // Vercel starts a new function instance on demand. Wait for MongoDB before
   // routing requests so a cold start cannot query through a disconnected model.
   if (ensureReady) {
@@ -18,6 +23,7 @@ export const createApp = (ensureReady?: () => Promise<void>) => {
         await ensureReady();
         next();
       } catch (error) {
+        console.error("Backend database readiness failed:", error);
         next(error);
       }
     });

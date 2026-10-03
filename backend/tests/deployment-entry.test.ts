@@ -11,6 +11,10 @@ describe("deployment request readiness", () => {
       if (attempts === 1) throw new Error("MongoDB unavailable");
     });
 
+    const health = await request(app).get("/api/health").expect(200);
+    expect(health.body).toEqual({ service: "ok" });
+    expect(attempts).toBe(0);
+
     const failed = await request(app).get("/").expect(500);
     expect(failed.body.detail.error_code).toBe("E500");
 

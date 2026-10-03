@@ -13,4 +13,6 @@ const ensureMongoConnection = () => {
 };
 
 // The default Express export is the entrypoint for the Vercel backend service.
-export default createApp(ensureMongoConnection);
+const app = createApp(ensureMongoConnection);
+
+export default app;
