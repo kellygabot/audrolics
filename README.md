@@ -265,7 +265,7 @@ Anomaly tests must cover known leak localization, blockage localization, insuffi
 - Backend/API: Node.js, Express, Mongoose
 - Database: MongoDB
 - Backend package management: `npm`
-- Planned hosting: Vercel for frontend and backend
+- Hosting: Vercel Services for the frontend and backend
 - Future ML experiments: Modal
 
 ## Getting Started
@@ -290,7 +290,8 @@ MONGODB_DATABASE=audrolics
 FRONTEND_ORIGINS=http://localhost:3000,http://localhost:3001
 ```
 
-`MONGODB_URI` is required. If it is missing or left as `{URI}`, the backend refuses to start instead of falling back to in-memory persistence.
+`MONGODB_URI` is required for database operations. The backend does not fall
+back to in-memory persistence.
 
 The optional `MONGODB_DATABASE` env var can override the database name. If omitted, the backend uses:
 
@@ -328,6 +329,29 @@ Run linting with:
 cd frontend
 npm run lint
 ```
+
+## Deploy to Vercel
+
+This repository has one Vercel Services project at the repository root. The
+root `vercel.json` builds `frontend/` as Next.js and `backend/` as Express.
+Requests to `/api/*` reach the backend on the same domain; all page routes
+reach the frontend. The backend preserves the `/api/v1/*` paths used by the
+builder. [Vercel Services setup](https://vercel.com/docs/services) requires the
+project's **Framework Preset** to be **Services**.
+
+1. Import this repository into Vercel with the **Root Directory** left at the
+   repository root, and select **Services** as the framework.
+2. Set `MONGODB_URI` in the Vercel project environment to a reachable MongoDB
+   connection string. Set `MONGODB_DATABASE` if the database should have a name
+   other than `audrolics`. Do not add these values to Git.
+3. Deploy. Open `/schematics`, then create and save a schematic to confirm the
+   browser can reach `/api/v1/schematics` and MongoDB.
+
+No `BACKEND_API_BASE_URL` is needed for this one-project setup. For two
+independent Vercel projects, select `backend/` and `frontend/` as their
+respective Root Directories, deploy the backend first, then set
+`BACKEND_API_BASE_URL` on the frontend project to the backend's HTTPS origin.
+The browser still calls same-origin `/api/*` paths through the frontend rewrite.
 
 ## Team
 

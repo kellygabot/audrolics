@@ -7,8 +7,21 @@ import { schematicsRouter } from "./routes/schematics.js";
 import { simulationRouter } from "./routes/simulation.js";
 import { errorHandler } from "./utils/errors.js";
 
-export const createApp = () => {
+export const createApp = (ensureReady?: () => Promise<void>) => {
   const app = express();
+
+  // Vercel starts a new function instance on demand. Wait for MongoDB before
+  // routing requests so a cold start cannot query through a disconnected model.
+  if (ensureReady) {
+    app.use(async (_request, _response, next) => {
+      try {
+        await ensureReady();
+        next();
+      } catch (error) {
+        next(error);
+      }
+    });
+  }
 
   app.use(
     cors({

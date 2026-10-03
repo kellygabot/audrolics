@@ -12,9 +12,10 @@ PUT    /api/v1/schematics/:schematicId
 DELETE /api/v1/schematics/:schematicId
 ```
 
-The frontend calls same-origin `/api/*` paths. `frontend/next.config.ts` rewrites
-those requests to this backend through `BACKEND_API_BASE_URL` or
-`NEXT_PUBLIC_API_BASE_URL`.
+The frontend calls same-origin `/api/*` paths. The root Vercel Services config
+routes them to the Express entrypoint in `src/index.ts`. When deployed as two
+separate Vercel projects, the frontend instead uses `BACKEND_API_BASE_URL` to
+rewrite those paths to this backend.
 
 ## Setup
 

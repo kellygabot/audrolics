@@ -26,7 +26,7 @@ function formatDate(iso: string): string {
   }
 }
 
-export function SchematicsPage() {
+function SchematicsPage() {
   // Placeholder user – replace with real auth once implemented.
   // TODO(auth): wire this to the real session/user once authentication lands.
   // This page is the only in-scope surface for now.

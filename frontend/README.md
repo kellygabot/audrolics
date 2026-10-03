@@ -62,15 +62,18 @@ The builder persists schematics through the backend API. Client modules call sam
 paths such as `/api/v1/schematics`; `next.config.ts` rewrites those requests to the
 configured Express/Mongoose backend.
 
-Set the backend base URL with:
+For standalone local development, the rewrite defaults to `http://localhost:8000`.
+For a separate production frontend project, set the backend base URL with:
 
 ```env
-NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+BACKEND_API_BASE_URL=https://your-backend.vercel.app
 ```
 
-`BACKEND_API_BASE_URL` can also be used for server-side deployment config. Production
-should point one of these values to the deployed backend URL. Do not hardcode
-localhost in components or client data modules.
+The root Vercel Services deployment routes `/api/*` directly to the backend, so
+it does not need `BACKEND_API_BASE_URL`. In production, there is no localhost
+fallback. `NEXT_PUBLIC_API_BASE_URL` remains supported for existing setups, but
+the server-only `BACKEND_API_BASE_URL` is preferred. Do not hardcode localhost
+in components or client data modules.
 
 Until Feature 4 authentication is implemented, schematic API calls send `X-User-Id`.
 The current builder uses `dev-user` by default and lets you edit that value in the UI.

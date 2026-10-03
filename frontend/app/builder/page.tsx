@@ -279,7 +279,7 @@ const clamp = (value: number, min: number, max: number) =>
   Math.min(Math.max(value, min), max);
 const id = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
 
-export function BuilderPage() {
+function BuilderPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
