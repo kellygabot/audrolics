@@ -1,7 +1,9 @@
 
 "use client";
 
-// Imports
+// The builder keeps the editable graph, viewport, and inspector in one page.
+// The helpers below handle validation and persistence; SVG components near the
+// bottom of this file render the graph without owning its state.
 import {
   type KeyboardEvent,
   type MouseEvent as ReactMouseEvent,
@@ -14,6 +16,7 @@ import {
   useState,
 } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import "./builder.css";
 
 import Modal from "@/components/modal/page";
 
@@ -22,6 +25,11 @@ import {
   validateFieldValue,
   validateTankLevels,
 } from "../../lib/builder-rules";
+import {
+  fitInlineSymbolScale,
+  linkEndpoints,
+  nodeBoundaryPoint,
+} from "../../lib/builder-canvas-geometry";
 
 import {
   deleteSchematic as deleteStoredSchematic,
@@ -35,7 +43,9 @@ import {
   type AnomalyApiResponse,
 } from "../../lib/builder-storage";
 
-// Elements, types and necessary variables
+// A schematic is a directed graph: nodes are endpoints and links join two nodes.
+// Design inputs and simulation outputs stay in separate fields so a simulation
+// cannot silently overwrite values entered by an engineer.
 type NodeType = "JUNCTION" | "RESERVOIR" | "TANK";
 type LinkType = "PIPE" | "PUMP" | "VALVE" | "FILTER";
 type ToolType = NodeType | LinkType;
@@ -163,6 +173,8 @@ const HISTORY_LIMIT = 60;
 const RECOVERY_KEY = "audrolics.builder.recovery";
 const DEV_USER_ID = "dev-user";
 
+// Palette metadata drives the left panel. Its symbol artwork is applied by
+// builder.css, while these codes remain readable to assistive technology.
 const nodeTools: {
   type: NodeType;
   label: string;
@@ -196,6 +208,31 @@ const linkTools: {
   },
 ];
 
+// Node artwork and canvas-only inline devices use their intrinsic aspect ratios.
+// The palette deliberately retains the original link graphics.
+const nodeSymbols: Record<NodeType, { src: string; width: number; height: number }> = {
+  JUNCTION: { src: "/junction.svg", width: 38, height: 39 },
+  RESERVOIR: { src: "/reservoir.svg", width: 44, height: 39 },
+  TANK: { src: "/tank.svg", width: 42, height: 27 },
+};
+
+const linkSymbols: Record<Exclude<LinkType, "PIPE">, {
+  src: string;
+  width: number;
+  height: number;
+  portSpan: number;
+  nativeAxis: "horizontal" | "vertical";
+  portAxisOffsetX?: number;
+}> = {
+  // The original pump and strainer connect vertically. Their clean artwork
+  // omits those short stubs, so the canvas line meets the top/bottom outlines.
+  PUMP: { src: "/pump_clean.svg", width: 58, height: 45, portSpan: 45, nativeAxis: "vertical", portAxisOffsetX: -7 },
+  VALVE: { src: "/valve_clean.svg", width: 56, height: 41, portSpan: 56, nativeAxis: "horizontal" },
+  FILTER: { src: "/strainer_clean.svg", width: 44, height: 44, portSpan: 44, nativeAxis: "vertical" },
+};
+
+// Keep defaults in one place so New, delete, recovery, and initial render all
+// begin with the same valid empty-document shape.
 const defaultModel = (): SchematicModel => ({
   name: "Untitled schematic",
   nodes: [],
@@ -209,7 +246,7 @@ const defaultModel = (): SchematicModel => ({
     threshold_flow_abs: 0.5,
   },
   filter_multipliers: { clean: 1, partially_clogged: 3, clogged: 10 },
-  styling: { line_color: "#0f766e", line_thickness: 2, symbol_size: 1 },
+  styling: { line_color: "#000000", line_thickness: 2, symbol_size: 1 },
   visibility: {
     length: true,
     diameter: true,
@@ -246,12 +283,14 @@ export function BuilderPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
+  // Persistent document data and its undo history.
   const [model, setModel] = useState(defaultModel);
   const [history, setHistory] = useState<HistoryState>({
     past: [],
     future: [],
   });
   const [selection, setSelection] = useState<Selection[]>([]);
+  // Transient canvas modes: placement, connection, dragging, and panning.
   const [activeTool, setActiveTool] = useState<ToolType | null>(null);
   const [pendingLink, setPendingLink] = useState<{
     type: LinkType;
@@ -261,11 +300,13 @@ export function BuilderPage() {
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [panState, setPanState] = useState<PanState | null>(null);
   const [isSpacePressed, setIsSpacePressed] = useState(false);
+  // Inspector validation and user-facing status do not belong in the saved graph.
   const [touched, setTouched] = useState<Set<string>>(new Set());
   const [showAllErrors, setShowAllErrors] = useState(false);
   const [statusMessage, setStatusMessage] = useState("Ready to build");
   const [rightPanelWidth, setRightPanelWidth] = useState(340);
   const [isResizingPanel, setIsResizingPanel] = useState(false);
+  // Recovery, navigation, and API operations are separate from graph editing.
   const [recoveryCandidate, setRecoveryCandidate] =
     useState<SchematicModel | null>(null);
   const [lastSavedSnapshot, setLastSavedSnapshot] = useState(() =>
@@ -286,6 +327,7 @@ export function BuilderPage() {
   const [anomalyResult, setAnomalyResult] = useState<AnomalyApiResponse | null>(
     null,
   );
+  const [hoveredAnomaly, setHoveredAnomaly] = useState<number | null>(null);
 
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -293,6 +335,8 @@ export function BuilderPage() {
   // The starting snapshot is committed once on pointer-up.
   const dragStartModelRef = useRef<SchematicModel | null>(null);
 
+  // Only one selected element has editable properties; multi-selection remains
+  // available for canvas actions such as copy and delete.
   const selectedNode =
     selection.length === 1 && selection[0].kind === "node"
       ? model.nodes.find((node) => node.id === selection[0].id)
@@ -563,6 +607,8 @@ export function BuilderPage() {
     }
   }
 
+  // Pointer handlers route each gesture through one canvas mode. Keeping those
+  // modes here prevents the SVG symbols from duplicating graph edit logic.
   function handleCanvasPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
     // Canvas pointer ownership is split by mode: pan, node placement, or drag-box
     // selection. Element-specific handlers stop propagation before this runs.
@@ -899,6 +945,7 @@ export function BuilderPage() {
 
   function deleteItems(items: Selection[]) {
     if (items.length === 0) return;
+    // Removing a node also removes every link attached to it.
     const nodeIds = new Set(
       items.filter((item) => item.kind === "node").map((item) => item.id),
     );
@@ -1204,6 +1251,8 @@ export function BuilderPage() {
     setErrorModalOpen(true);
   }
 
+  // Solver responses update computed values only. They do not modify inputs or
+  // enter undo history, because the result can be recalculated from the graph.
   function applySimulationResult(result: {
     node_results: Array<Record<string, number | null | string> & { id: string }>;
     link_results: Array<Record<string, number | null | string> & { id: string }>;
@@ -1240,6 +1289,7 @@ export function BuilderPage() {
       const result = await runSimulationApi(DEV_USER_ID, toApiPayload(model));
       applySimulationResult(result);
       setAnomalyResult(null);
+      setHoveredAnomaly(null);
       setLastSavedSnapshot(JSON.stringify(toApiPayload(model)));
       const warnings = result.warnings?.length ? ` (${result.warnings.length} warning(s))` : "";
       setStatusMessage(`Simulation complete in ${result.iterations} iterations${warnings}`);
@@ -1276,6 +1326,7 @@ export function BuilderPage() {
         })),
       });
       setAnomalyResult(result);
+      setHoveredAnomaly(null);
       const segmentCount = result.suspect_segments.length;
       setStatusMessage(
         `Anomaly detection complete: ${result.flagged_points.length} flagged point(s), ${segmentCount} suspect segment(s)`,
@@ -1291,6 +1342,8 @@ export function BuilderPage() {
     return model.measurements.find((m) => m.element_id === elementId) ?? null;
   }
 
+  // Field readings are indexed by element so editing an existing reading
+  // replaces it instead of creating a duplicate measurement.
   function setMeasurementForElement(
     elementId: string,
     elementType: "NODE" | "LINK",
@@ -1424,24 +1477,28 @@ export function BuilderPage() {
     );
   }
 
-  function exportSvg() {
+  async function exportSvg() {
     const svg = svgRef.current;
     if (!svg) return;
-    const clone = svg.cloneNode(true) as SVGSVGElement;
-    clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-    download(
-      `${model.name}.svg`,
-      "image/svg+xml",
-      new XMLSerializer().serializeToString(clone),
-    );
+    try {
+      download(`${model.name}.svg`, "image/svg+xml", await serializeCanvasSvg(svg));
+    } catch {
+      setStatusMessage("Unable to export SVG symbols");
+    }
   }
 
-  function exportPng() {
+  async function exportPng() {
     // PNG export rasterizes the same SVG used on-screen, keeping symbols and labels
     // aligned with the current canvas view.
     const svg = svgRef.current;
     if (!svg) return;
-    const data = new XMLSerializer().serializeToString(svg);
+    let data: string;
+    try {
+      data = await serializeCanvasSvg(svg);
+    } catch {
+      setStatusMessage("Unable to export PNG symbols");
+      return;
+    }
     const image = new Image();
     const blob = new Blob([data], { type: "image/svg+xml;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -1459,6 +1516,10 @@ export function BuilderPage() {
         if (png) downloadBlob(`${model.name}.png`, png);
       });
     };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      setStatusMessage("Unable to render PNG export");
+    };
     image.src = url;
   }
 
@@ -1471,9 +1532,11 @@ export function BuilderPage() {
     <span className="ml-2 inline-block h-2 w-2 rounded-full bg-amber-500" aria-label="Unsaved changes" title="Unsaved changes" />
   ) : null;
 
+  // Page layout: command bar, optional recovery notice, then palette/canvas/
+  // inspector columns. The canvas remains the only place that owns gestures.
   return (
-    <main className="flex h-screen min-h-180 flex-col overflow-hidden bg-slate-100 text-slate-950">
-      <header className="flex h-14 shrink-0 items-center justify-between border-b border-slate-300 bg-white px-4 shadow-sm">
+    <main className="builder-page flex h-screen min-h-180 flex-col overflow-hidden bg-slate-100 text-slate-950">
+      <header className="builder-header flex h-14 shrink-0 items-center justify-between border-b border-slate-300 bg-white px-4 shadow-sm">
         <div className="flex min-w-0 items-center gap-3">
           <div className="flex h-9 w-9 items-center justify-center rounded border border-cyan-700 bg-cyan-700 text-sm font-bold text-white">
             A
@@ -1667,13 +1730,14 @@ export function BuilderPage() {
         </div>
       )}
 
+      {/* Three work areas share the available height; only the inspector width is resizable. */}
       <div
-        className="grid min-h-0 flex-1"
+        className="builder-workspace grid min-h-0 flex-1"
         style={{
-          gridTemplateColumns: `280px minmax(0, 1fr) ${rightPanelWidth}px`,
+          gridTemplateColumns: `clamp(265px, 16vw, 300px) minmax(0, 1fr) ${rightPanelWidth}px`,
         }}
       >
-        <aside className="flex min-h-0 flex-col border-r border-slate-300 bg-white">
+        <aside className="builder-palette flex min-h-0 flex-col border-r border-slate-300 bg-white">
           <PanelHeader
             title="Element Palette"
             detail="Click or drag onto canvas"
@@ -1692,7 +1756,7 @@ export function BuilderPage() {
               onPick={setActiveTool}
             />
 
-            <section className="mt-4 rounded border border-slate-200 bg-slate-50 p-3">
+            <section className="builder-visibility mt-4 rounded border border-slate-200 bg-slate-50 p-3">
               <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
                 Parameter Labels
               </h2>
@@ -1721,7 +1785,7 @@ export function BuilderPage() {
           </div>
         </aside>
 
-        <section className="flex min-w-0 flex-col bg-slate-200">
+        <section className="builder-canvas flex min-w-0 flex-col bg-slate-200">
           <div className="flex h-10 shrink-0 items-center justify-between border-b border-slate-300 bg-slate-50 px-3">
             <div className="flex items-center gap-3 text-xs text-slate-600">
               <span className="font-medium text-slate-800">Canvas</span>
@@ -1780,6 +1844,7 @@ export function BuilderPage() {
             onKeyDown={handleKeyDown}
             onKeyUp={handleKeyUp}
           >
+            {/* One SVG provides both the live canvas and the SVG/PNG export source. */}
             <svg
               ref={svgRef}
               className="h-full w-full select-none bg-slate-100"
@@ -1841,6 +1906,15 @@ export function BuilderPage() {
                 {pendingLink && (
                   <PendingLink model={model} pendingLink={pendingLink} />
                 )}
+                {anomalyResult && (
+                  <AnomalyOverlays
+                    model={model}
+                    anomalyResult={anomalyResult}
+                    hovered={hoveredAnomaly}
+                    onHover={setHoveredAnomaly}
+                    layer="routes"
+                  />
+                )}
                 {model.nodes.map((node) => (
                   <NodeShape
                     key={node.id}
@@ -1860,7 +1934,13 @@ export function BuilderPage() {
                   />
                 ))}
                 {anomalyResult && (
-                  <AnomalyOverlays model={model} anomalyResult={anomalyResult} />
+                  <AnomalyOverlays
+                    model={model}
+                    anomalyResult={anomalyResult}
+                    hovered={hoveredAnomaly}
+                    onHover={setHoveredAnomaly}
+                    layer="labels"
+                  />
                 )}
                 {selectionBox && (
                   <rect
@@ -1878,7 +1958,7 @@ export function BuilderPage() {
           </div>
         </section>
 
-        <aside className="relative flex min-h-0 flex-col border-l border-slate-300 bg-white">
+        <aside className="builder-inspector relative flex min-h-0 flex-col border-l border-slate-300 bg-white">
           <button
             type="button"
             aria-label="Resize properties panel"
@@ -2106,6 +2186,8 @@ export function BuilderPage() {
   );
 }
 
+// A palette choice arms a tool for click placement; native drag and drop uses
+// the same tool type so both entry paths create identical graph elements.
 function PaletteGroup({
   title,
   tools,
@@ -2118,7 +2200,7 @@ function PaletteGroup({
   onPick: (tool: ToolType | null) => void;
 }) {
   return (
-    <section className="mb-4">
+    <section className="builder-palette-group mb-4">
       <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
         {title}
       </h2>
@@ -2136,18 +2218,18 @@ function PaletteGroup({
             }
             aria-pressed={activeTool === tool.type}
             onClick={() => onPick(activeTool === tool.type ? null : tool.type)}
-            className={`flex items-center gap-3 rounded border px-3 py-2 text-left transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-700 ${
+            className={`builder-palette-tool flex items-center gap-3 rounded border px-3 py-2 text-left transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-700 ${
               activeTool === tool.type
                 ? "border-cyan-700 bg-cyan-50 text-cyan-950"
                 : "border-slate-200 bg-white text-slate-800 hover:border-cyan-700"
             }`}
           >
-            <span className="flex h-9 w-10 shrink-0 items-center justify-center rounded border border-slate-300 bg-slate-50 text-xs font-bold">
+            <span className="builder-palette-symbol flex h-9 w-10 shrink-0 items-center justify-center rounded border border-slate-300 bg-slate-50 text-xs font-bold">
               {tool.code}
             </span>
             <span className="min-w-0">
               <span className="block text-sm font-medium">{tool.label}</span>
-              <span className="block truncate text-xs text-slate-500">
+              <span className="builder-palette-detail block truncate text-xs text-slate-500">
                 {tool.detail}
               </span>
             </span>
@@ -2158,6 +2240,7 @@ function PaletteGroup({
   );
 }
 
+// A node's saved position is the center of its artwork and the drag anchor.
 function NodeShape({
   node,
   model,
@@ -2179,7 +2262,10 @@ function NodeShape({
   ) => void;
   onContextMenu: (event: ReactMouseEvent<SVGGElement>) => void;
 }) {
-  const size = 18 * model.styling.symbol_size;
+  const symbol = nodeSymbols[node.type];
+  const width = symbol.width * model.styling.symbol_size;
+  const height = symbol.height * model.styling.symbol_size;
+  const labelX = node.x + width / 2 + 7;
   return (
     <g
       data-element-id={node.id}
@@ -2188,48 +2274,29 @@ function NodeShape({
       onPointerUp={(event) => onPointerUp(event, node)}
       onContextMenu={onContextMenu}
     >
-      {node.type === "JUNCTION" && (
-        <circle
-          cx={node.x}
-          cy={node.y}
-          r={size / 2}
-          fill="#e0f2fe"
-          stroke="#075985"
-          strokeWidth={selected ? 4 : 2}
-        />
-      )}
-      {node.type === "RESERVOIR" && (
-        <g>
-          <polygon
-            points={`${node.x},${node.y - size} ${node.x - size},${node.y + size} ${node.x + size},${node.y + size}`}
-            fill="#ecfeff"
-            stroke="#0e7490"
-            strokeWidth={selected ? 4 : 2}
-          />
-          <line
-            x1={node.x - size * 0.5}
-            y1={node.y + size * 0.4}
-            x2={node.x + size * 0.5}
-            y2={node.y + size * 0.4}
-            stroke="#0e7490"
-            strokeWidth="2"
-          />
-        </g>
-      )}
-      {node.type === "TANK" && (
+      {selected && (
         <rect
-          x={node.x - size}
-          y={node.y - size * 0.7}
-          width={size * 2}
-          height={size * 1.4}
-          rx="3"
-          fill="#f0fdfa"
-          stroke="#0f766e"
-          strokeWidth={selected ? 4 : 2}
+          x={node.x - width / 2 - 5}
+          y={node.y - height / 2 - 5}
+          width={width + 10}
+          height={height + 10}
+          rx="5"
+          fill="none"
+          stroke="#1d4ed8"
+          strokeWidth="2"
+          pointerEvents="none"
         />
       )}
+      <image
+        href={symbol.src}
+        x={node.x - width / 2}
+        y={node.y - height / 2}
+        width={width}
+        height={height}
+        preserveAspectRatio="xMidYMid meet"
+      />
       <text
-        x={node.x + size + 4}
+        x={labelX}
         y={node.y + 4}
         fill="#0f172a"
         fontSize="12"
@@ -2242,7 +2309,7 @@ function NodeShape({
           typeof node.input_params.elevation === "number") &&
         node.input_params.elevation !== "" && (
           <text
-            x={node.x + size + 4}
+            x={labelX}
             y={node.y + 18}
             fill="#64748b"
             fontSize="11"
@@ -2254,7 +2321,7 @@ function NodeShape({
         node.computed.pressure_head !== null &&
         node.computed.pressure_head !== undefined && (
           <text
-            x={node.x + size + 4}
+            x={labelX}
             y={node.y + 32}
             fill="#64748b"
             fontSize="11"
@@ -2266,6 +2333,8 @@ function NodeShape({
   );
 }
 
+// Resolve link endpoints from node ids on every render. Cached link.points are
+// kept for export, while node positions remain the drawing source of truth.
 function LinkShape({
   link,
   model,
@@ -2285,8 +2354,43 @@ function LinkShape({
   const from = model.nodes.find((node) => node.id === link.from_node_id);
   const to = model.nodes.find((node) => node.id === link.to_node_id);
   if (!from || !to) return null;
-  const mid = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+  const segment = linkEndpoints(from, to, model.styling.symbol_size);
+  const mid = {
+    x: (segment.start.x + segment.end.x) / 2,
+    y: (segment.start.y + segment.end.y) / 2,
+  };
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const length = Math.hypot(dx, dy);
+  const unit = length ? { x: dx / length, y: dy / length } : { x: 1, y: 0 };
+  const symbol = link.type === "PIPE" ? null : linkSymbols[link.type];
+  const symbolScale = symbol
+    ? fitInlineSymbolScale(segment.length, model.styling.symbol_size, symbol.portSpan)
+    : 0;
+  const leftPort = symbol
+    ? {
+        x: mid.x - unit.x * symbol.portSpan * symbolScale / 2,
+        y: mid.y - unit.y * symbol.portSpan * symbolScale / 2,
+      }
+    : mid;
+  const rightPort = symbol
+    ? {
+        x: mid.x + unit.x * symbol.portSpan * symbolScale / 2,
+        y: mid.y + unit.y * symbol.portSpan * symbolScale / 2,
+      }
+    : mid;
+  const angle = (Math.atan2(dy, dx) * 180) / Math.PI -
+    (symbol?.nativeAxis === "vertical" ? 90 : 0);
+  const radians = (angle * Math.PI) / 180;
+  const symbolHalfWidth = symbol
+    ? (Math.abs(Math.cos(radians)) * symbol.width +
+        Math.abs(Math.sin(radians)) * symbol.height) * symbolScale / 2
+    : 0;
+  const labelX = mid.x + symbolHalfWidth + 10;
   const stroke = selected ? "#f97316" : model.styling.line_color;
+  const strokeWidth = selected
+    ? model.styling.line_thickness + 2
+    : model.styling.line_thickness;
   return (
     <g
       data-element-id={link.id}
@@ -2295,28 +2399,39 @@ function LinkShape({
       onContextMenu={onContextMenu}
     >
       <line
-        x1={from.x}
-        y1={from.y}
-        x2={to.x}
-        y2={to.y}
+        x1={segment.start.x}
+        y1={segment.start.y}
+        x2={segment.end.x}
+        y2={segment.end.y}
         stroke="transparent"
         strokeWidth="18"
+        pointerEvents="stroke"
       />
       <line
-        x1={from.x}
-        y1={from.y}
-        x2={to.x}
-        y2={to.y}
+        x1={segment.start.x}
+        y1={segment.start.y}
+        x2={symbol && symbolScale > 0 ? leftPort.x : segment.end.x}
+        y2={symbol && symbolScale > 0 ? leftPort.y : segment.end.y}
         stroke={stroke}
-        strokeWidth={
-          selected
-            ? model.styling.line_thickness + 2
-            : model.styling.line_thickness
-        }
+        strokeWidth={strokeWidth}
+        strokeLinecap="butt"
       />
-      <LinkSymbol link={link} mid={mid} />
+      {symbol && symbolScale > 0 && (
+        <>
+          <line
+            x1={rightPort.x}
+            y1={rightPort.y}
+            x2={segment.end.x}
+            y2={segment.end.y}
+            stroke={stroke}
+            strokeWidth={strokeWidth}
+            strokeLinecap="butt"
+          />
+          <LinkSymbol symbol={symbol} mid={mid} angle={angle} size={symbolScale} />
+        </>
+      )}
       <text
-        x={mid.x + 10}
+        x={labelX}
         y={mid.y - 8}
         fill="#0f172a"
         fontSize="12"
@@ -2327,7 +2442,7 @@ function LinkShape({
       {model.visibility.length &&
         typeof link.input_params.length === "string" &&
         link.input_params.length !== "" && (
-          <text x={mid.x + 10} y={mid.y + 8} fill="#64748b" fontSize="11">
+          <text x={labelX} y={mid.y + 8} fill="#64748b" fontSize="11">
             {link.input_params.length} m
           </text>
         )}
@@ -2335,14 +2450,14 @@ function LinkShape({
         (typeof link.input_params.diameter === "string" ||
           typeof link.input_params.diameter === "number") &&
         link.input_params.diameter !== "" && (
-          <text x={mid.x + 10} y={mid.y + 22} fill="#64748b" fontSize="11">
+          <text x={labelX} y={mid.y + 22} fill="#64748b" fontSize="11">
             Dia {link.input_params.diameter} mm
           </text>
         )}
       {model.visibility.flow &&
         link.computed.flow_rate !== null &&
         link.computed.flow_rate !== undefined && (
-          <text x={mid.x + 10} y={mid.y + 36} fill="#64748b" fontSize="11">
+          <text x={labelX} y={mid.y + 36} fill="#64748b" fontSize="11">
             Flow {link.computed.flow_rate} L/s
           </text>
         )}
@@ -2350,36 +2465,28 @@ function LinkShape({
   );
 }
 
-function LinkSymbol({ link, mid }: { link: BuilderLink; mid: Point }) {
-  if (link.type === "PIPE")
-    return <circle cx={mid.x} cy={mid.y} r="3" fill="#0f766e" />;
-  if (link.type === "PUMP")
-    return (
-      <circle
-        cx={mid.x}
-        cy={mid.y}
-        r="10"
-        fill="#fff7ed"
-        stroke="#c2410c"
-        strokeWidth="2"
-      />
-    );
-  if (link.type === "VALVE")
-    return (
-      <polygon
-        points={`${mid.x - 10},${mid.y - 8} ${mid.x},${mid.y} ${mid.x - 10},${mid.y + 8} ${mid.x + 10},${mid.y + 8} ${mid.x},${mid.y} ${mid.x + 10},${mid.y - 8}`}
-        fill="#fef3c7"
-        stroke="#a16207"
-        strokeWidth="2"
-      />
-    );
+function LinkSymbol({
+  symbol,
+  mid,
+  angle,
+  size,
+}: {
+  symbol: { src: string; width: number; height: number; portAxisOffsetX?: number };
+  mid: Point;
+  angle: number;
+  size: number;
+}) {
+  const width = symbol.width * size;
+  const height = symbol.height * size;
   return (
-    <polygon
-      points={`${mid.x},${mid.y - 12} ${mid.x + 12},${mid.y} ${mid.x},${mid.y + 12} ${mid.x - 12},${mid.y}`}
-      fill="#f8fafc"
-      stroke="#475569"
-      strokeDasharray="3 2"
-      strokeWidth="2"
+    <image
+      href={symbol.src}
+      x={mid.x - width / 2 - (symbol.portAxisOffsetX ?? 0) * size}
+      y={mid.y - height / 2}
+      width={width}
+      height={height}
+      transform={`rotate(${angle} ${mid.x} ${mid.y})`}
+      preserveAspectRatio="xMidYMid meet"
     />
   );
 }
@@ -2387,11 +2494,16 @@ function LinkSymbol({ link, mid }: { link: BuilderLink; mid: Point }) {
 function AnomalyOverlays({
   model,
   anomalyResult,
+  hovered,
+  onHover,
+  layer,
 }: {
   model: SchematicModel;
   anomalyResult: AnomalyApiResponse;
+  hovered: number | null;
+  onHover: (index: number | null) => void;
+  layer: "routes" | "labels";
 }) {
-  const [hovered, setHovered] = useState<number | null>(null);
   return (
     <>
       {anomalyResult.suspect_segments.map((segment, index) => {
@@ -2402,54 +2514,63 @@ function AnomalyOverlays({
               ? segment.path
               : findLinkPath(segment.from, segment.to, model.links);
         if (!path || path.length === 0) return null;
-        const points: Point[] = [];
+        const visibleLinks: { start: Point; end: Point }[] = [];
         for (const linkId of path) {
           const link = model.links.find((l) => l.id === linkId);
           if (!link) continue;
           const from = model.nodes.find((n) => n.id === link.from_node_id);
           const to = model.nodes.find((n) => n.id === link.to_node_id);
           if (!from || !to) continue;
-          points.push(from, to);
+          visibleLinks.push(linkEndpoints(from, to, model.styling.symbol_size));
         }
-        if (points.length < 2) return null;
-        const d = points
-          .map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`)
-          .join(" ");
-        const mid = points[Math.floor(points.length / 2)];
+        if (visibleLinks.length === 0) return null;
+        const middleLink = visibleLinks[Math.floor(visibleLinks.length / 2)];
+        const mid = {
+          x: (middleLink.start.x + middleLink.end.x) / 2,
+          y: (middleLink.start.y + middleLink.end.y) / 2,
+        };
         const color = segment.signature === "LEAK" ? "#ef4444" : "#f97316";
-        return (
-          <g key={index} onMouseEnter={() => setHovered(index)} onMouseLeave={() => setHovered(null)}>
-            <path
-              d={d}
-              fill="none"
-              stroke={color}
-              strokeWidth="6"
-              strokeDasharray="6 4"
-              opacity="0.6"
-              pointerEvents="all"
-              style={{ cursor: "pointer" }}
-            />
-            {hovered === index && (
-              <g>
-                <rect
-                  x={mid.x + 8}
-                  y={mid.y - 38}
-                  width="160"
-                  height="34"
-                  rx="4"
-                  fill="rgba(15, 23, 42, 0.9)"
+        if (layer === "routes") {
+          return (
+            <g key={index} onMouseEnter={() => onHover(index)} onMouseLeave={() => onHover(null)}>
+              {visibleLinks.map(({ start, end }, linkIndex) => (
+                <line
+                  key={linkIndex}
+                  x1={start.x}
+                  y1={start.y}
+                  x2={end.x}
+                  y2={end.y}
+                  stroke={color}
+                  strokeWidth="6"
+                  strokeDasharray="6 4"
+                  opacity="0.6"
+                  pointerEvents="stroke"
+                  style={{ cursor: "pointer" }}
                 />
-                <text
-                  x={mid.x + 16}
-                  y={mid.y - 18}
-                  fill="white"
-                  fontSize="11"
-                  fontWeight="600"
-                >
-                  {segment.signature} — {Math.round(segment.confidence)}% confidence
-                </text>
-              </g>
-            )}
+              ))}
+            </g>
+          );
+        }
+        if (hovered !== index) return null;
+        return (
+          <g key={index} pointerEvents="none">
+            <rect
+              x={mid.x + 8}
+              y={mid.y - 38}
+              width="160"
+              height="34"
+              rx="4"
+              fill="rgba(15, 23, 42, 0.9)"
+            />
+            <text
+              x={mid.x + 16}
+              y={mid.y - 18}
+              fill="white"
+              fontSize="11"
+              fontWeight="600"
+            >
+              {segment.signature} — {Math.round(segment.confidence)}% confidence
+            </text>
           </g>
         );
       })}
@@ -2466,12 +2587,20 @@ function PendingLink({
 }) {
   const from = model.nodes.find((node) => node.id === pendingLink.fromNodeId);
   if (!from) return null;
+  const start = nodeBoundaryPoint(
+    from,
+    pendingLink.cursor,
+    model.styling.symbol_size,
+  );
+  const end = distance(from, pendingLink.cursor) < distance(from, start)
+    ? start
+    : pendingLink.cursor;
   return (
     <line
-      x1={from.x}
-      y1={from.y}
-      x2={pendingLink.cursor.x}
-      y2={pendingLink.cursor.y}
+      x1={start.x}
+      y1={start.y}
+      x2={end.x}
+      y2={end.y}
       stroke="#f97316"
       strokeWidth="2"
       strokeDasharray="8 6"
@@ -2479,6 +2608,8 @@ function PendingLink({
   );
 }
 
+// The inspector separates editable design inputs, optional field readings,
+// and read-only simulation results for the selected graph element.
 function ElementForm(props: {
   elementId: string;
   label: string;
@@ -2497,7 +2628,7 @@ function ElementForm(props: {
   const fields = fieldsForType(props.type, props.params);
   return (
     <div className="space-y-4">
-      <section className="rounded border border-slate-200 bg-white p-4">
+      <section className="builder-element-identity rounded border border-slate-200 bg-white p-4">
         <label className="text-xs font-medium text-slate-500">Label</label>
         <input
           value={props.label}
@@ -2507,7 +2638,7 @@ function ElementForm(props: {
         <p className="mt-2 text-xs text-slate-500">{props.type}</p>
       </section>
 
-      <section className="rounded border border-slate-200 bg-white">
+      <section className="builder-input-parameters rounded border border-slate-200 bg-white">
         <div className="border-b border-slate-200 px-4 py-3">
           <h2 className="text-sm font-semibold text-slate-900">
             Input Parameters
@@ -2531,7 +2662,7 @@ function ElementForm(props: {
       </section>
 
       {props.onMeasurementChange && (
-        <section className="rounded border border-slate-200 bg-white">
+        <section className="builder-field-measurement rounded border border-slate-200 bg-white">
           <div className="border-b border-slate-200 px-4 py-3">
             <h2 className="text-sm font-semibold text-slate-900">
               Field Measurement
@@ -2561,7 +2692,7 @@ function ElementForm(props: {
         </section>
       )}
 
-      <section className="rounded border border-slate-200 bg-slate-100">
+      <section className="builder-computed-results rounded border border-slate-200 bg-slate-100">
         <div className="border-b border-slate-200 px-4 py-3">
           <h2 className="text-sm font-semibold text-slate-900">
             Computed Results
@@ -2791,7 +2922,7 @@ function ToolbarButton({
       type="button"
       disabled={disabled}
       onClick={onClick}
-      className="h-8 rounded border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 shadow-sm transition hover:border-cyan-700 hover:text-cyan-800 focus-visible:outline focus-visible:outline-offset-2 focus-visible:outline-cyan-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 disabled:shadow-none"
+      className="builder-toolbar-button h-8 rounded border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 shadow-sm transition hover:border-cyan-700 hover:text-cyan-800 focus-visible:outline focus-visible:outline-offset-2 focus-visible:outline-cyan-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 disabled:shadow-none"
     >
       {label}
     </button>
@@ -2800,13 +2931,15 @@ function ToolbarButton({
 
 function PanelHeader({ title, detail }: { title: string; detail: string }) {
   return (
-    <div className="border-b border-slate-200 px-4 py-3">
+    <div className="builder-panel-heading border-b border-slate-200 px-4 py-3">
       <h2 className="text-sm font-semibold text-slate-900">{title}</h2>
       <p className="mt-1 text-xs text-slate-500">{detail}</p>
     </div>
   );
 }
 
+// Field definitions determine both the controls shown in the inspector and
+// their labels/units; the underlying model still stores plain input_params.
 function fieldsForType(
   type: NodeType | LinkType,
   params: InputParams,
@@ -3174,6 +3307,43 @@ function labelize(key: string) {
 
 function csvCell(value: string) {
   return `"${value.replaceAll('"', '""')}"`;
+}
+
+// Standalone SVG files and PNG rasterization cannot rely on /public URLs.
+// Inline each used symbol once in a cloned SVG; the live canvas keeps the
+// lightweight URL references and remains unchanged.
+async function serializeCanvasSvg(svg: SVGSVGElement): Promise<string> {
+  const clone = svg.cloneNode(true) as SVGSVGElement;
+  clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  clone.setAttribute("width", String(svg.clientWidth));
+  clone.setAttribute("height", String(svg.clientHeight));
+  clone.querySelector('g > rect[fill="url(#major-grid)"]')?.remove();
+
+  const images = Array.from(clone.querySelectorAll("image[href]"));
+  const sources = [...new Set(images.map((image) => image.getAttribute("href")))].filter(
+    (src): src is string => Boolean(src?.startsWith("/")),
+  );
+  const embedded = new Map(
+    await Promise.all(
+      sources.map(async (src) => {
+        const response = await fetch(src);
+        if (!response.ok) throw new Error(`Unable to load symbol ${src}`);
+        const blob = await response.blob();
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result));
+          reader.onerror = () => reject(reader.error);
+          reader.readAsDataURL(blob);
+        });
+        return [src, dataUrl] as const;
+      }),
+    ),
+  );
+  for (const image of images) {
+    const src = image.getAttribute("href");
+    if (src && embedded.has(src)) image.setAttribute("href", embedded.get(src)!);
+  }
+  return new XMLSerializer().serializeToString(clone);
 }
 
 function download(filename: string, type: string, content: string) {
