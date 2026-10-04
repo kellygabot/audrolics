@@ -1,3 +1,8 @@
+vi.mock("@/lib/session", () => ({
+  useSession: () => ({ user: { id: "test-user", name: "Test User", email: "engineer@audrolics.dev", role: "USER" }, ready: true, logout: vi.fn().mockResolvedValue(undefined) }),
+  currentAccountId: () => "test-user",
+  apiFetch: (path: string, init?: RequestInit) => fetch(path, init),
+}));
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'

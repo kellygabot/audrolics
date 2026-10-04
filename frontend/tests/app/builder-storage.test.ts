@@ -1,3 +1,4 @@
+vi.mock("@/lib/session", () => ({ apiFetch: (path: string, init?: RequestInit) => fetch(path, init) }));
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -62,23 +63,18 @@ describe("builder backend storage adapter", () => {
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
       "/api/v1/schematics",
-      expect.objectContaining({
-        headers: expect.objectContaining({ "X-User-Id": "engineer-a" }),
-      }),
+      expect.objectContaining({}),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
       "/api/v1/schematics/schematic-1",
-      expect.objectContaining({
-        headers: expect.objectContaining({ "X-User-Id": "engineer-a" }),
-      }),
+      expect.objectContaining({}),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       3,
       "/api/v1/schematics/schematic-1",
       expect.objectContaining({
         method: "DELETE",
-        headers: expect.objectContaining({ "X-User-Id": "engineer-a" }),
       }),
     );
   });

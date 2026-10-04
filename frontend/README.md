@@ -75,5 +75,4 @@ fallback. `NEXT_PUBLIC_API_BASE_URL` remains supported for existing setups, but
 the server-only `BACKEND_API_BASE_URL` is preferred. Do not hardcode localhost
 in components or client data modules.
 
-Until Feature 4 authentication is implemented, schematic API calls send `X-User-Id`.
-The current builder uses `dev-user` by default and lets you edit that value in the UI.
+Schematic and analysis requests use a short-lived Bearer token. The session client refreshes it with an HTTP-only rotating cookie; saved diagrams are scoped to the signed-in account. Builder recovery drafts use account-specific localStorage keys.

@@ -17,6 +17,7 @@ import {
 } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import "./builder.css";
+import { currentAccountId, useSession } from "@/lib/session";
 
 import BuilderModals, { type BuilderErrorItem } from "./builder-modals";
 
@@ -161,8 +162,7 @@ const MAX_ZOOM = 200;
 const ZOOM_STEP = 10;
 const SNAP_PX = 10;
 const HISTORY_LIMIT = 60;
-const RECOVERY_KEY = "audrolics.builder.recovery";
-const DEV_USER_ID = "dev-user";
+const recoveryKey = () => `audrolics.builder.recovery.${currentAccountId()}`;
 
 // Palette metadata drives the left panel. Its symbol artwork is applied by
 // builder.css, while these codes remain readable to assistive technology.
@@ -249,13 +249,13 @@ const defaultModel = (): SchematicModel => ({
 
 const readRecoveryModel = (): SchematicModel | null => {
   if (typeof window === "undefined" || !window.localStorage) return null;
-  const raw = window.localStorage.getItem(RECOVERY_KEY);
+  const raw = window.localStorage.getItem(recoveryKey());
   if (!raw) return null;
   try {
     const recovered = JSON.parse(raw) as SchematicModel;
     return recovered?.nodes && recovered?.links ? recovered : null;
   } catch {
-    window.localStorage.removeItem(RECOVERY_KEY);
+    window.localStorage.removeItem(recoveryKey());
     return null;
   }
 };
@@ -273,6 +273,7 @@ const id = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
 function BuilderPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { user, logout } = useSession();
 
   // Persistent document data and its undo history.
   const [model, setModel] = useState(defaultModel);
@@ -379,7 +380,7 @@ function BuilderPage() {
   useEffect(() => {
     // Autosave-lite from the SRS: local recovery only, separate from explicit Mongo save.
     const interval = window.setInterval(() => {
-      localStorage.setItem(RECOVERY_KEY, JSON.stringify(model));
+      localStorage.setItem(recoveryKey(), JSON.stringify(model));
     }, 30000);
     return () => window.clearInterval(interval);
   }, [model]);
@@ -502,7 +503,7 @@ function BuilderPage() {
   }
 
   function discardRecoveryDraft() {
-    window.localStorage.removeItem(RECOVERY_KEY);
+    window.localStorage.removeItem(recoveryKey());
     setRecoveryCandidate(null);
     setStatusMessage("Local draft discarded");
   }
@@ -1058,7 +1059,7 @@ function BuilderPage() {
     if (!schematicId) return;
     try {
       const loaded = await loadStoredSchematic<SchematicModel>(
-        DEV_USER_ID,
+        currentAccountId(),
         schematicId,
       );
       if (!loaded) {
@@ -1083,7 +1084,7 @@ function BuilderPage() {
   }
 
   function performDiscardAndNavigate() {
-    window.localStorage.removeItem(RECOVERY_KEY);
+    window.localStorage.removeItem(recoveryKey());
     if (!navigationGuard) return;
     if (navigationGuard.kind === "new") {
       performStartNewSchematic();
@@ -1120,7 +1121,7 @@ function BuilderPage() {
   async function attemptSaveSchematic(): Promise<boolean> {
     setShowAllErrors(false);
     try {
-      const saved = await saveStoredSchematic(DEV_USER_ID, toApiPayload(model));
+      const saved = await saveStoredSchematic(currentAccountId(), toApiPayload(model));
       const savedModel = fromApiPayload(saved);
       setModel(savedModel);
       setHistory({ past: [], future: [] });
@@ -1269,7 +1270,7 @@ function BuilderPage() {
     }
     setSimulationRunning(true);
     try {
-      const result = await runSimulationApi(DEV_USER_ID, toAnalysisPayload(model));
+      const result = await runSimulationApi(currentAccountId(), toAnalysisPayload(model));
       applySimulationResult(result);
       setAnomalyResult(null);
       setHoveredAnomaly(null);
@@ -1303,7 +1304,7 @@ function BuilderPage() {
     }
     setAnomalyRunning(true);
     try {
-      const result = await detectAnomaliesApi(DEV_USER_ID, {
+      const result = await detectAnomaliesApi(currentAccountId(), {
         ...toAnalysisPayload(model),
         measurements: model.measurements.map((m) => ({
           ...m,
@@ -1375,7 +1376,7 @@ function BuilderPage() {
     if (!pendingSavedDelete) return;
     try {
       const deleted = await deleteStoredSchematic(
-        DEV_USER_ID,
+        currentAccountId(),
         pendingSavedDelete,
       );
       if (!deleted) {
@@ -1524,6 +1525,7 @@ function BuilderPage() {
   return (
     <main className="builder-page flex h-dvh min-h-0 flex-col overflow-hidden bg-slate-100 text-slate-950">
       <header className="builder-header flex h-14 shrink-0 items-center justify-between border-b border-slate-300 bg-white px-4 shadow-sm">
+        <div className="flex items-center gap-3 text-xs"><span>{user?.name} · {user?.email}</span><button type="button" onClick={() => void logout().then(() => router.replace("/"))}>Log out</button></div>
         <div className="flex min-w-0 items-center gap-3">
           <div className="flex h-9 w-9 items-center justify-center rounded border border-cyan-700 bg-cyan-700 text-sm font-bold text-white">
             A

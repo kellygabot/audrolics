@@ -1,5 +1,7 @@
 'use client';
 
+import { useRouter } from "next/navigation";
+import { useSession } from "@/lib/session";
 import Image from 'next/image';
 
 interface HeaderProps {
@@ -7,6 +9,8 @@ interface HeaderProps {
 } 
 
 export default function Header({ onOpenAuth }: HeaderProps) {
+  const { user, logout } = useSession();
+  const router = useRouter();
   return (
     // Changed <main> to <header> for correct HTML semantics.
     // Added shrink-0 so it doesn't get squished by flex containers.
@@ -17,7 +21,7 @@ export default function Header({ onOpenAuth }: HeaderProps) {
       </div>
       
       <div className="flex items-center gap-2 ml-auto">
-        <button 
+        {user ? <><button onClick={() => router.push(user.role === "ADMIN" ? "/admin" : "/schematics")}>{user.name}</button><button onClick={() => void logout().then(() => router.push("/"))}>Log out</button></> : <><button
           onClick={() => onOpenAuth?.('signup')} 
           className="text-l opacity-85 border-2 border-[#8a8a8a]/90 rounded-xl pt-[0.30rem] pb-2 px-4 mr-3 transition-colors hover:bg-black/5"
         >
@@ -28,7 +32,7 @@ export default function Header({ onOpenAuth }: HeaderProps) {
           className="text-l text-white font-bold bg-[#021eef] rounded-xl pt-1.5 pb-2 px-4.5 mr-4 transition-colors hover:bg-[#021eef]/90"
         >
           Log in
-        </button>
+        </button></>}
       </div>
     </header>
   );

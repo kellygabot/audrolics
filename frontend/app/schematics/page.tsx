@@ -3,6 +3,7 @@
 import Image from "next/image";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useSession } from "@/lib/session";
 import Modal from "@/components/modal/page";
 import {
   deleteSchematic,
@@ -11,7 +12,6 @@ import {
   type StoredSchematicSummary,
 } from "../../lib/builder-storage";
 
-const DEV_USER_ID = "dev-user";
 
 function formatDate(iso: string): string {
   try {
@@ -27,13 +27,9 @@ function formatDate(iso: string): string {
 }
 
 function SchematicsPage() {
-  // Placeholder user – replace with real auth once implemented.
-  // TODO(auth): wire this to the real session/user once authentication lands.
-  // This page is the only in-scope surface for now.
-  const PLACEHOLDER_USER = {
-    email: "engineer@audrolics.dev",
-    role: "ENGINEER" as const,
-  };
+  const { user, logout } = useSession();
+  const account = user!;
+  const userId = user?.id;
   const [profileOpen, setProfileOpen] = useState(false);
   const [query, setQuery] = useState("");
   const router = useRouter();
@@ -50,7 +46,7 @@ function SchematicsPage() {
       setLoading(true);
       setError(null);
       try {
-        const schematics = await listSchematics(DEV_USER_ID);
+        const schematics = await listSchematics(userId!);
         if (!cancelled) setItems(schematics);
       } catch (err) {
         if (!cancelled)
@@ -63,12 +59,12 @@ function SchematicsPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [userId]);
 
   async function confirmDelete() {
     if (!pendingDelete) return;
     try {
-      const deleted = await deleteSchematic(DEV_USER_ID, pendingDelete.id);
+      const deleted = await deleteSchematic(user!.id, pendingDelete.id);
       if (deleted) {
         setItems((current) =>
           current.filter((item) => item.id !== pendingDelete.id),
@@ -88,11 +84,9 @@ function SchematicsPage() {
     )
     : items;
 
-  function handleSignOut() {
+  async function handleSignOut() {
     setProfileOpen(false);
-    // TODO(auth): clear the real session/refresh cookie, then redirect to sign-in.
-    // Per SRS §8: invalidate the 7-day HTTP-only refresh-token cookie,
-    // then navigate to the sign-in page.
+    await logout();
     router.replace("/");
   }
 
@@ -133,15 +127,15 @@ function SchematicsPage() {
             type="button"
             aria-haspopup="dialog"
             aria-expanded={profileOpen}
-            aria-label={PLACEHOLDER_USER.email}
+            aria-label={account.email}
             onClick={() => setProfileOpen((open) => !open)}
             className="flex items-center h-12 gap-2 p-4"
           >
             <span className="flex h-6 w-6 items-center justify-center rounded-full bg-cyan-100 text-cyan-700 font-medium text-xs">
-              {PLACEHOLDER_USER.email.charAt(0).toUpperCase()}
+              {account.email.charAt(0).toUpperCase()}
             </span>
             <span className="hidden sm:inline truncate max-w-35">
-              {PLACEHOLDER_USER.email}
+              {account.email}
             </span>
           </button>
         </div>
@@ -288,9 +282,9 @@ function SchematicsPage() {
         }
       >
         <p>
-          This will permanently delete{" "}
+          This will remove{" "}
           <strong>{pendingDelete?.name.trim() || "Untitled schematic"}</strong> from the Express/MongoDB
-          backend. This action cannot be undone.
+          backend. An administrator can restore it.
         </p>
       </Modal>
 
@@ -313,12 +307,16 @@ function SchematicsPage() {
       >
         <dl className="space-y-3 text-sm">
           <div>
+            <dt className="text-slate-500">Name</dt>
+            <dd className="mt-1 font-medium text-slate-900">{account.name}</dd>
+          </div>
+          <div>
             <dt className="text-slate-500">Email</dt>
-            <dd className="mt-1 font-medium text-slate-900">{PLACEHOLDER_USER.email}</dd>
+            <dd className="mt-1 font-medium text-slate-900">{account.email}</dd>
           </div>
           <div>
             <dt className="text-slate-500">Role</dt>
-            <dd className="mt-1 font-medium text-slate-900">{PLACEHOLDER_USER.role}</dd>
+            <dd className="mt-1 font-medium text-slate-900">{account.role}</dd>
           </div>
         </dl>
       </Modal>

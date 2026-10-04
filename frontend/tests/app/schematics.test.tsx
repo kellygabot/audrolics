@@ -1,3 +1,8 @@
+vi.mock("@/lib/session", () => ({
+  useSession: () => ({ user: { id: "test-user", name: "Test User", email: "engineer@audrolics.dev", role: "USER" }, ready: true, logout: vi.fn().mockResolvedValue(undefined) }),
+  currentAccountId: () => "test-user",
+  apiFetch: (path: string, init?: RequestInit) => fetch(path, init),
+}));
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
@@ -112,7 +117,7 @@ describe("SchematicsPage", () => {
     expect(headerNewSchematic).toHaveLength(0);
   });
 
-  it("profile chip reveals placeholder email and role", async () => {
+  it("profile chip reveals account details", async () => {
     render(<SchematicsPage />);
 
     await screen.findByText("Alpha Network");
@@ -124,11 +129,11 @@ describe("SchematicsPage", () => {
     const content = within(dialog);
     expect(content.getByText("Your profile")).toBeInTheDocument();
     expect(content.getAllByText("engineer@audrolics.dev").length).toBeGreaterThanOrEqual(1);
-    expect(content.getByText("ENGINEER")).toBeInTheDocument();
+    expect(content.getByText("USER")).toBeInTheDocument();
     expect(content.getByRole("button", { name: /sign out/i })).toBeInTheDocument();
   });
 
-  it("Sign out closes popover (placeholder router.replace call)", async () => {
+  it("Sign out closes the profile popover", async () => {
     render(<SchematicsPage />);
 
     await screen.findByText("Alpha Network");

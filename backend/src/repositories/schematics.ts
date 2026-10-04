@@ -8,7 +8,7 @@ const withoutMongoId = { _id: 0 };
 
 export class SchematicRepository {
   async list(userId: string): Promise<SchematicSummary[]> {
-    return SchematicModel.find({ user_id: userId }, withoutMongoId)
+    return SchematicModel.find({ user_id: userId, deleted_at: null }, withoutMongoId)
       .sort({ updated_at: -1 })
       .select({ id: 1, name: 1, updated_at: 1 })
       .lean<SchematicSummary[]>()
@@ -16,7 +16,7 @@ export class SchematicRepository {
   }
 
   async get(userId: string, schematicId: string): Promise<SchematicDocument | null> {
-    return SchematicModel.findOne({ id: schematicId, user_id: userId }, withoutMongoId)
+    return SchematicModel.findOne({ id: schematicId, user_id: userId, deleted_at: null }, withoutMongoId)
       .lean<SchematicDocument>()
       .exec();
   }
@@ -77,12 +77,12 @@ export class SchematicRepository {
       updated_at: utcNowIso(),
     };
 
-    await SchematicModel.replaceOne({ id: schematicId, user_id: userId }, document).exec();
+    await SchematicModel.replaceOne({ id: schematicId, user_id: userId, deleted_at: null }, document).exec();
     return document;
   }
 
   async delete(userId: string, schematicId: string): Promise<boolean> {
-    const result = await SchematicModel.deleteOne({ id: schematicId, user_id: userId }).exec();
-    return result.deletedCount === 1;
+    const result = await SchematicModel.updateOne({ id: schematicId, user_id: userId, deleted_at: null }, { $set: { deleted_at: utcNowIso() } }).exec();
+    return result.modifiedCount === 1;
   }
 }

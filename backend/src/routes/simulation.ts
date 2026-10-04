@@ -12,13 +12,6 @@ export const simulationRouter = Router();
 const schematicsRepository = new SchematicRepository();
 const auditRepository = new AuditLogRepository();
 
-const requireUserId = (value: unknown): string => {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new ApiError(401, "E400", "X-User-Id header is required until authentication is implemented.");
-  }
-  return value.trim();
-};
-
 const normalizeSimulationPayload = (body: SimulationPayload): SchematicPayload => {
   const raw: Record<string, unknown> = {
     name: body.name ?? "Inline simulation",
@@ -32,7 +25,7 @@ const normalizeSimulationPayload = (body: SimulationPayload): SchematicPayload =
 };
 
 simulationRouter.post("/", async (request, response, next) => {
-  const userId = requireUserId(request.header("X-User-Id"));
+  const userId = String(request.account!._id);
   let schematicId: string | undefined;
 
   try {

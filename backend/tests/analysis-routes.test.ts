@@ -18,6 +18,7 @@ import type { LinkPayload, MeasurementPayload, NodePayload } from "../src/types.
 
 const app = express();
 app.use(express.json());
+app.use((req, _res, next) => { req.account = { _id: "test" } as unknown as typeof req.account; next(); });
 app.use("/simulate", simulationRouter);
 app.use("/anomalies", anomaliesRouter);
 app.use(errorHandler);
@@ -42,9 +43,9 @@ describe("analysis routes for saved and inline drafts", () => {
     const draft = network();
     draft.nodes[1].input_params!.base_demand = "";
     repository.get.mockResolvedValue(draft);
-    const simulation = await request(app).post("/simulate").set("X-User-Id", "test").send({ schematic_id: "draft-1" });
+    const simulation = await request(app).post("/simulate").send({ schematic_id: "draft-1" });
     expect(simulation.status).toBe(422);
-    const anomaly = await request(app).post("/anomalies").set("X-User-Id", "test").send({
+    const anomaly = await request(app).post("/anomalies").send({
       schematic_id: "draft-1", measurements: [{ element_id: "j1", type: "PRESSURE_HEAD", value: 10 }],
     });
     expect(anomaly.status).toBe(422);
@@ -53,17 +54,17 @@ describe("analysis routes for saved and inline drafts", () => {
   it("recomputes anomaly expectations from current inputs instead of stored results", async () => {
     repository.get.mockResolvedValue(network());
     const body = { measurements: [{ element_id: "j1", type: "PRESSURE_HEAD", value: 999 }] };
-    const saved = await request(app).post("/anomalies").set("X-User-Id", "test")
+    const saved = await request(app).post("/anomalies")
       .send({ ...body, schematic_id: "draft-1" });
     expect(saved.status).toBe(200);
     expect(saved.body.flagged_points[0].expected).not.toBe(999);
 
-    const inline = await request(app).post("/anomalies").set("X-User-Id", "test")
+    const inline = await request(app).post("/anomalies")
       .send({ ...network(), ...body });
     expect(inline.status).toBe(200);
     expect(inline.body.flagged_points[0].expected).toBeCloseTo(saved.body.flagged_points[0].expected);
 
-    const simulation = await request(app).post("/simulate").set("X-User-Id", "test")
+    const simulation = await request(app).post("/simulate")
       .send({ schematic_id: "draft-1" });
     expect(simulation.status).toBe(200);
     expect(simulation.body.node_results.find((node: { id: string }) => node.id === "j1").pressure_head)
@@ -76,7 +77,7 @@ describe("analysis routes for saved and inline drafts", () => {
       elevation: "30", diameter: "4", min_level: "0", max_level: "10", initial_level: "5",
     } };
     repository.get.mockResolvedValue(draft);
-    const result = await request(app).post("/anomalies").set("X-User-Id", "test").send({
+    const result = await request(app).post("/anomalies").send({
       schematic_id: "draft-1", measurements: [{ element_id: "r1", type: "PRESSURE_HEAD", value: 7 }],
     });
     expect(result.status).toBe(200);
@@ -93,8 +94,8 @@ describe("analysis routes for saved and inline drafts", () => {
       input_params: { mesh_size: "1", minor_loss_coeff: "2", filter_status: "CLOGGED" }, computed: {} });
     const filter_multipliers = { clean: 1, partially_clogged: 3, clogged: 7 };
     repository.get.mockResolvedValue({ ...draft, filter_multipliers });
-    const saved = await request(app).post("/simulate").set("X-User-Id", "test").send({ schematic_id: "draft-1" });
-    const inline = await request(app).post("/simulate").set("X-User-Id", "test")
+    const saved = await request(app).post("/simulate").send({ schematic_id: "draft-1" });
+    const inline = await request(app).post("/simulate")
       .send({ ...draft, filter_multipliers });
     expect(saved.status).toBe(200);
     expect(inline.status).toBe(200);
@@ -107,7 +108,7 @@ describe("analysis routes for saved and inline drafts", () => {
     draft.links[0] = { id: "v", label: "V", type: "VALVE", from_node_id: "r1", to_node_id: "j1",
       input_params: { valve_type: "FCV", diameter: 150, valve_setting: 5, status: "ACTIVE" } };
     repository.get.mockResolvedValue(draft);
-    const response = await request(app).post("/simulate").set("X-User-Id", "test").send({ schematic_id: "draft-1" });
+    const response = await request(app).post("/simulate").send({ schematic_id: "draft-1" });
     expect(response.status).toBe(422);
     expect(response.body.detail.error_code).toBe("E104");
     expect(audit.insert).toHaveBeenCalledWith(expect.objectContaining({ status: "NON_CONVERGENCE" }));

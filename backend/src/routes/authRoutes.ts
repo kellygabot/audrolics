@@ -1,9 +1,10 @@
-import { Router } from 'express';
-import { register, login } from '../controllers/authControllers.js';
-
+import { Router } from "express";
+import { register, login, refresh, logout, currentUser } from "../controllers/authControllers.js";
+import { requireAccount } from "../middleware/auth.js";
 const router = Router();
-
-router.post('/register', register);
-router.post('/login', login);
-
+router.post("/register", register);
+router.post("/login", login);
+router.post("/refresh", refresh);
+router.post("/logout", logout);
+router.get("/me", requireAccount, currentUser);
 export default router;

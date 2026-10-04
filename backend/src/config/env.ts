@@ -18,7 +18,10 @@ export const config: AppConfig = {
     .split(",")
     .map((origin) => origin.trim())
     .filter(Boolean),
-  jwtSecret: process.env.JWT_SECRET ?? "default_jwt_secret_change_in_production",
+  jwtSecret: process.env.JWT_SECRET ?? "",
 };
 
 export const hasMongoConfig = () => config.mongodbUri.length > 0;
+if (process.env.NODE_ENV !== "test" && (config.jwtSecret.length < 32 || config.jwtSecret.startsWith("replace-"))) {
+  throw new Error("JWT_SECRET must be configured with a random value of at least 32 characters before starting the backend.");
+}
