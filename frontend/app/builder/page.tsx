@@ -301,7 +301,6 @@ function BuilderPage() {
   const [panState, setPanState] = useState<PanState | null>(null);
   const [isSpacePressed, setIsSpacePressed] = useState(false);
   // Inspector validation and user-facing status do not belong in the saved graph.
-  const [touched, setTouched] = useState<Set<string>>(new Set());
   const [showAllErrors, setShowAllErrors] = useState(false);
   const [statusMessage, setStatusMessage] = useState("Ready to build");
   const [rightPanelWidth, setRightPanelWidth] = useState(340);
@@ -1048,7 +1047,6 @@ function BuilderPage() {
     setModel(blank);
     setSelection([]);
     setHistory({ past: [], future: [] });
-    setTouched(new Set());
     setShowAllErrors(false);
     setLastSavedSnapshot(JSON.stringify(toApiPayload(blank)));
     setStatusMessage("Started a new unsaved schematic");
@@ -1126,16 +1124,7 @@ function BuilderPage() {
   }
 
   async function attemptSaveSchematic(): Promise<boolean> {
-    setShowAllErrors(true);
-    const errors = validateModel(model);
-    const clientErrorItems = buildSaveErrorItems(errors);
-    if (clientErrorItems.length > 0) {
-      setErrorModalTitle("Unable to save schematic");
-      setErrorModalItems(clientErrorItems);
-      setErrorModalGeneral([]);
-      setErrorModalOpen(true);
-      return false;
-    }
+    setShowAllErrors(false);
     try {
       const saved = await saveStoredSchematic(DEV_USER_ID, toApiPayload(model));
       const savedModel = fromApiPayload(saved);
@@ -1286,11 +1275,10 @@ function BuilderPage() {
     }
     setSimulationRunning(true);
     try {
-      const result = await runSimulationApi(DEV_USER_ID, toApiPayload(model));
+      const result = await runSimulationApi(DEV_USER_ID, toAnalysisPayload(model));
       applySimulationResult(result);
       setAnomalyResult(null);
       setHoveredAnomaly(null);
-      setLastSavedSnapshot(JSON.stringify(toApiPayload(model)));
       const warnings = result.warnings?.length ? ` (${result.warnings.length} warning(s))` : "";
       setStatusMessage(`Simulation complete in ${result.iterations} iterations${warnings}`);
     } catch (error) {
@@ -1319,7 +1307,7 @@ function BuilderPage() {
     setAnomalyRunning(true);
     try {
       const result = await detectAnomaliesApi(DEV_USER_ID, {
-        ...toApiPayload(model),
+        ...toAnalysisPayload(model),
         measurements: model.measurements.map((m) => ({
           ...m,
           type: m.measurement_type,
@@ -1329,7 +1317,9 @@ function BuilderPage() {
       setHoveredAnomaly(null);
       const segmentCount = result.suspect_segments.length;
       setStatusMessage(
-        `Anomaly detection complete: ${result.flagged_points.length} flagged point(s), ${segmentCount} suspect segment(s)`,
+        result.warnings.length > 0
+          ? result.warnings.join(" ")
+          : `Anomaly detection complete: ${result.flagged_points.length} flagged point(s), ${segmentCount} suspect segment(s)`,
       );
     } catch (error) {
       showErrorModal("Unable to run anomaly detection", error);
@@ -1984,12 +1974,8 @@ function BuilderPage() {
                 type={selectedNode.type}
                 params={selectedNode.input_params}
                 computed={selectedNode.computed}
-                touched={touched}
                 errors={validation}
                 showAllErrors={showAllErrors}
-                onTouch={(field) =>
-                  setTouched((current) => new Set(current).add(field))
-                }
                 onRename={renameSelected}
                 onParamChange={(key, value) =>
                   updateNodeParam(selectedNode.id, key, value)
@@ -2012,12 +1998,8 @@ function BuilderPage() {
                 type={selectedLink.type}
                 params={selectedLink.input_params}
                 computed={selectedLink.computed}
-                touched={touched}
                 errors={validation}
                 showAllErrors={showAllErrors}
-                onTouch={(field) =>
-                  setTouched((current) => new Set(current).add(field))
-                }
                 onRename={renameSelected}
                 onParamChange={(key, value) =>
                   updateLinkParam(selectedLink.id, key, value)
@@ -2506,6 +2488,22 @@ function AnomalyOverlays({
 }) {
   return (
     <>
+      {layer === "labels" && anomalyResult.flagged_points.map((flag, index) => {
+        const node = model.nodes.find((item) => item.id === flag.element_id);
+        const link = model.links.find((item) => item.id === flag.element_id);
+        const from = link && model.nodes.find((item) => item.id === link.from_node_id);
+        const to = link && model.nodes.find((item) => item.id === link.to_node_id);
+        const point = node ? { x: node.x, y: node.y } : from && to
+          ? { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 } : null;
+        if (!point) return null;
+        return (
+          <g key={`flag-${index}`} pointerEvents="none" aria-label={`Anomaly at ${flag.element_id}`}>
+            <circle cx={point.x} cy={point.y - 28} r="11" fill="#fff" stroke="#b91c1c" strokeWidth="2" />
+            <text x={point.x} y={point.y - 24} textAnchor="middle" fill="#b91c1c" fontSize="12" fontWeight="bold">!</text>
+            <title>{`Measured ${flag.actual}; expected ${flag.expected}; residual ${flag.residual}`}</title>
+          </g>
+        );
+      })}
       {anomalyResult.suspect_segments.map((segment, index) => {
         const path =
           segment.pipe_ids && segment.pipe_ids.length > 0
@@ -2616,10 +2614,8 @@ function ElementForm(props: {
   type: NodeType | LinkType;
   params: InputParams;
   computed: ComputedValues;
-  touched: Set<string>;
   errors: Record<string, string>;
   showAllErrors: boolean;
-  onTouch: (field: string) => void;
   onRename: (value: string) => void;
   onParamChange: (key: string, value: FieldValue) => void;
   measurement?: Measurement | null;
@@ -2652,9 +2648,7 @@ function ElementForm(props: {
               field={field}
               value={props.params[field.key]}
               error={props.errors[`${props.elementId}.${field.key}`]}
-              touched={props.touched}
               showAllErrors={props.showAllErrors}
-              onTouch={props.onTouch}
               onChange={(value) => props.onParamChange(field.key, value)}
             />
           ))}
@@ -2711,7 +2705,7 @@ function ElementForm(props: {
                 className="flex justify-between rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs"
               >
                 <span className="font-medium text-slate-600">
-                  {labelize(key)}
+                  {key === "energy" ? "Energy (kWh per 1 h)" : labelize(key)}
                 </span>
                 <span className={value === null || value === undefined ? "text-slate-400" : "text-slate-800"}>
                   {display}
@@ -2735,16 +2729,11 @@ function FieldControl(props: {
   field: FieldDef;
   value: FieldValue;
   error?: string;
-  touched: Set<string>;
   showAllErrors: boolean;
-  onTouch: (field: string) => void;
   onChange: (value: FieldValue) => void;
 }) {
-  const fieldKey = `${props.elementId}.${props.field.key}`;
-  // Blank required fields are allowed while placing elements; errors become
-  // visible after the user touches a field or presses Save.
-  const showError =
-    props.error && (props.showAllErrors || props.touched.has(fieldKey));
+  // Analysis reveals validation messages; drafts remain freely editable.
+  const showError = props.error && props.showAllErrors;
   if (props.field.kind === "select") {
     return (
       <label className="block">
@@ -2753,7 +2742,6 @@ function FieldControl(props: {
         </span>
         <select
           value={String(props.value ?? "")}
-          onBlur={() => props.onTouch(fieldKey)}
           onChange={(event) => props.onChange(event.target.value)}
           className="mt-1 h-9 w-full rounded border border-slate-300 px-2 text-sm"
         >
@@ -2805,7 +2793,6 @@ function FieldControl(props: {
                     ),
                   )
                 }
-                onBlur={() => props.onTouch(fieldKey)}
                 className="h-8 rounded border border-slate-300 px-2 text-xs"
               />
               <input
@@ -2820,7 +2807,6 @@ function FieldControl(props: {
                     ),
                   )
                 }
-                onBlur={() => props.onTouch(fieldKey)}
                 className="h-8 rounded border border-slate-300 px-2 text-xs"
               />
               <button
@@ -2857,7 +2843,6 @@ function FieldControl(props: {
             ? props.value
             : ""
         }
-        onBlur={() => props.onTouch(fieldKey)}
         onChange={(event) => props.onChange(event.target.value)}
         className="mt-1 h-9 w-full rounded border border-slate-300 px-2 text-sm"
       />
@@ -2945,7 +2930,7 @@ function fieldsForType(
   params: InputParams,
 ): FieldDef[] {
   // This is the frontend mirror of SRS Section 3.1. The backend validates the
-  // same concepts before persistence.
+  // same concepts before running analysis.
   if (type === "JUNCTION")
     return [
       { key: "elevation", label: "Elevation", kind: "number", unit: "m" },
@@ -3099,9 +3084,9 @@ function defaultLinkComputed(type: LinkType): ComputedValues {
       headloss: null,
       unit_headloss: null,
     };
-  if (type === "PUMP") return { flow: null, head_added: null, energy: null };
-  if (type === "VALVE") return { flow: null, pressure_drop: null };
-  return { headloss: null };
+  if (type === "PUMP") return { flow_rate: null, head_added: null, energy: null };
+  if (type === "VALVE") return { flow_rate: null, pressure_drop: null };
+  return { flow_rate: null, headloss: null };
 }
 
 function computedForType(type: NodeType | LinkType): ComputedValues {
@@ -3152,12 +3137,24 @@ function validateModel(model: SchematicModel): Record<string, string> {
     if (!link.from_node_id || !link.to_node_id)
       errors[`${link.id}.endpoints`] = "Both endpoints must be connected.";
     for (const field of fieldsForType(link.type, link.input_params)) {
+      if (link.type === "PUMP" && (field.key === "rated_power" || field.key === "pump_curve")) continue;
       validateField(
         `${link.id}.${field.key}`,
         field,
         link.input_params[field.key],
         errors,
       );
+    }
+    if (link.type === "PUMP") {
+      const curve = link.input_params.pump_curve;
+      const power = link.input_params.rated_power;
+      if (Array.isArray(curve) && curve.length > 0) {
+        validateField(`${link.id}.pump_curve`, { key: "pump_curve", label: "Pump Curve", kind: "curve", yKey: "head" }, curve, errors);
+      } else if (power === "" || power === undefined) {
+        errors[`${link.id}.rated_power`] = "Enter rated power or a pump curve.";
+      } else {
+        validateField(`${link.id}.rated_power`, { key: "rated_power", label: "Rated Power", kind: "number" }, power, errors);
+      }
     }
   }
   return errors;
@@ -3174,6 +3171,11 @@ function validateField(
 }
 
 function toApiPayload(model: SchematicModel) {
+  // Keep form strings and incomplete curve rows intact when saving drafts.
+  return model;
+}
+
+function toAnalysisPayload(model: SchematicModel) {
   return {
     ...model,
     nodes: model.nodes.map((node) => ({
@@ -3234,7 +3236,12 @@ function findLinkPath(
 
 function normalizeParams(params: InputParams): InputParams {
   // Form inputs stay as strings for editing. API payloads convert numeric-looking
-  // values so backend validation receives numbers instead of DOM strings.
+  // numeric fields for analysis; text fields such as demand_pattern stay strings.
+  const numericKeys = new Set([
+    "elevation", "base_demand", "total_head", "diameter", "min_level", "max_level",
+    "initial_level", "length", "roughness", "minor_loss_coeff", "rated_power",
+    "speed", "valve_setting", "mesh_size",
+  ]);
   return Object.fromEntries(
     Object.entries(params).map(([key, value]) => {
       if (Array.isArray(value)) {
@@ -3251,7 +3258,7 @@ function normalizeParams(params: InputParams): InputParams {
         ];
       }
       if (
-        typeof value === "string" &&
+        numericKeys.has(key) && typeof value === "string" &&
         value !== "" &&
         Number.isFinite(Number(value))
       )

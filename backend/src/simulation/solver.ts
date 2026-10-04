@@ -33,6 +33,7 @@ export type SolverLink = {
   status: string;
   pumpCurve?: { flow: number; head: number }[];
   ratedPowerKw?: number;
+  speed?: number;
   valveType?: string;
   valveSetting?: number;
   gpvCurve?: { flow: number; headloss: number }[];
@@ -70,7 +71,7 @@ const minorLoss = (
   const v = flowM3s / area;
   const h = kMinor * (Math.abs(v) * v) / (2 * G_MPS2);
   const g = (kMinor * Math.abs(flowM3s)) / (G_MPS2 * area * area);
-  return { h: flowM3s >= 0 ? h : -h, g };
+  return { h, g };
 };
 
 const hazenWilliamsLoss = (
@@ -126,8 +127,8 @@ const powerPumpHead = (
   flowM3s: number,
 ): { head: number; derivativeMps: number } => {
   const q = Math.max(Math.abs(flowM3s), MIN_FLOW_M3S);
-  const head = (ratedPowerKw * 1000) / (G_MPS2 * q);
-  const derivative = -(ratedPowerKw * 1000) / (G_MPS2 * q * q);
+  const head = ratedPowerKw / (G_MPS2 * q);
+  const derivative = -ratedPowerKw / (G_MPS2 * q * q);
   return { head, derivativeMps: derivative };
 };
 
@@ -136,17 +137,16 @@ const interpolateGpvCurve = (
   flowLps: number,
 ): { h: number; g: number } => {
   const sorted = [...curve].sort((a, b) => a.flow - b.flow);
-  const q = Math.max(Math.abs(flowLps), MIN_FLOW_M3S);
+  const q = Math.abs(flowLps);
   if (q <= sorted[0].flow) {
-    const h = sorted[0].headloss * (q / Math.max(sorted[0].flow, MIN_FLOW_M3S));
-    const g = sorted[0].headloss / Math.max(sorted[0].flow / 1000, MIN_FLOW_M3S);
+    const h = sorted[0].headloss;
+    const g = 0;
     return { h: flowLps >= 0 ? h : -h, g };
   }
   if (q >= sorted[sorted.length - 1].flow) {
     const last = sorted[sorted.length - 1];
     const h = last.headloss;
-    const prev = sorted[sorted.length - 2];
-    const g = prev ? (last.headloss - prev.headloss) / ((last.flow - prev.flow) / 1000) : 0;
+    const g = 0;
     return { h: flowLps >= 0 ? h : -h, g };
   }
   for (let i = 0; i < sorted.length - 1; i++) {
@@ -177,14 +177,15 @@ const linkHeadlossAndDerivative = (
 
   if (link.type === "PUMP") {
     const qLps = flowM3s * 1000;
+    const speed = link.speed ?? 1;
     let head: number;
     let derivative: number;
     if (link.pumpCurve && link.pumpCurve.length >= 2) {
-      const interp = interpolatePumpCurve(link.pumpCurve, qLps);
-      head = interp.head;
-      derivative = interp.derivativeMps;
+      const interp = interpolatePumpCurve(link.pumpCurve, qLps / speed);
+      head = interp.head * speed * speed;
+      derivative = interp.derivativeMps * speed;
     } else if (link.ratedPowerKw) {
-      const pp = powerPumpHead(link.ratedPowerKw, flowM3s);
+      const pp = powerPumpHead(link.ratedPowerKw * speed ** 3, flowM3s);
       head = pp.head;
       derivative = pp.derivativeMps;
     } else {
@@ -200,7 +201,7 @@ const linkHeadlossAndDerivative = (
     if (link.valveType === "GPV" && link.gpvCurve && link.gpvCurve.length >= 2) {
       return interpolateGpvCurve(link.gpvCurve, flowM3s * 1000);
     }
-    const kSetting = link.valveSetting ?? 0.1;
+    const kSetting = link.valveType === "TCV" ? (link.valveSetting ?? 0.1) : 0.1;
     return minorLoss(flowM3s, diameter, kSetting);
   }
 
@@ -335,9 +336,35 @@ const solveTreeNetwork = (
     if (node === sourceIdx) continue;
     const linkId = parentLink[node];
     const link = solverLinks.find((l) => l.id === linkId)!;
-    const qMag = subtreeDemand[node];
-    const { h } = linkHeadlossAndDerivative(link, qMag);
-    nodeHead[node] = nodeHead[parent[node]] - h;
+    const qLink = linkFlow.get(linkId)!;
+    if (link.type === "PUMP" && qLink < 0) {
+      throw new ApiError(422, "E200", `Pump '${link.label}' would flow backwards. Reverse its endpoints.`, link.id);
+    }
+    if (link.type === "VALVE" && link.status === "ACTIVE" && !parentForward[node]) {
+      throw new ApiError(422, "E200", `Active valve '${link.label}' must point downstream. Reverse its endpoints.`, link.id);
+    }
+    if (link.type === "VALVE" && link.status === "ACTIVE" && link.valveType === "FCV" &&
+        Math.abs(qLink * 1000 - link.valveSetting!) > FLOW_TOLERANCE_LPS) {
+      throw new ApiError(422, "E104", `FCV '${link.label}' cannot maintain ${link.valveSetting} L/s with the specified demands.`, link.id);
+    }
+    const { h } = linkHeadlossAndDerivative(link, qLink);
+    nodeHead[node] = nodeHead[parent[node]] - (parentForward[node] ? h : -h);
+    if (link.type === "VALVE" && link.status === "ACTIVE") {
+      const upstreamElevation = solverNodes[parent[node]].type === "RESERVOIR"
+        ? solverNodes[node].elevation : solverNodes[parent[node]].elevation;
+      const upstreamPressure = nodeHead[parent[node]] - upstreamElevation;
+      if (link.valveType === "PRV") {
+        const setting = link.valveSetting!;
+        if (setting >= upstreamPressure) {
+          throw new ApiError(422, "E203", `PRV '${link.label}' setting must be below upstream pressure.`, link.id);
+        }
+        nodeHead[node] = Math.min(nodeHead[node], solverNodes[node].elevation + setting);
+      } else if (link.valveType === "PSV" && upstreamPressure < link.valveSetting!) {
+        throw new ApiError(422, "E104", `PSV '${link.label}' cannot sustain ${link.valveSetting} m with the specified demands.`, link.id);
+      } else if (link.valveType === "PBV") {
+        nodeHead[node] = nodeHead[parent[node]] - link.valveSetting!;
+      }
+    }
   }
 
   // Tree solutions satisfy head-loss and continuity exactly by construction.
@@ -439,6 +466,7 @@ const parseLinks = (
         ...base,
         pumpCurve: Array.isArray(params.pump_curve) ? params.pump_curve as { flow: number; head: number }[] : undefined,
         ratedPowerKw: params.rated_power === undefined ? undefined : Number(params.rated_power),
+        speed: Number(params.speed ?? 1),
       };
     }
     if (link.type === "VALVE") {
@@ -450,9 +478,22 @@ const parseLinks = (
         gpvCurve: Array.isArray(params.gpv_curve) ? params.gpv_curve as { flow: number; headloss: number }[] : undefined,
       };
     }
+    // The v1 filter form has no bore field. Use the connected pipe bore;
+    // mesh_size describes the screen opening and cannot determine velocity.
+    const adjacentPipeDiameters = links
+      .filter((candidate) => candidate.type === "PIPE" &&
+        [link.from_node_id, link.to_node_id].some((id) => id === candidate.from_node_id || id === candidate.to_node_id))
+      .map((candidate) => Number(candidate.input_params?.diameter))
+      .filter((diameter) => Number.isFinite(diameter) && diameter > 0);
+    const filterDiameter = params.diameter === undefined
+      ? Math.min(...adjacentPipeDiameters)
+      : Number(params.diameter);
+    if (!Number.isFinite(filterDiameter) || filterDiameter <= 0) {
+      throw new ApiError(422, "E200", `Filter '${link.label}' needs a connected pipe diameter to calculate headloss.`, link.id, "diameter");
+    }
     return {
       ...base,
-      diameterMm: Number(params.diameter ?? 100),
+      diameterMm: filterDiameter,
       minorLossCoeff: Number(params.minor_loss_coeff ?? 0),
       filterStatus: String(params.filter_status ?? "CLEAN"),
     };
@@ -473,9 +514,7 @@ const solveLinearSystem = (A: number[][], b: number[]): number[] => {
       }
     }
     if (maxVal < 1e-12) {
-      M[i][i] = 1;
-      M[i][n] = 0;
-      continue;
+      throw new ApiError(422, "E104", "Simulation equations are singular. Check source heads, valve controls, and zero-resistance links.");
     }
     if (maxRow !== i) [M[i], M[maxRow]] = [M[maxRow], M[i]];
 
@@ -489,15 +528,97 @@ const solveLinearSystem = (A: number[][], b: number[]): number[] => {
 
   const x = new Array(n).fill(0);
   for (let i = n - 1; i >= 0; i--) {
-    if (Math.abs(M[i][i]) < 1e-12) {
-      x[i] = 0;
-      continue;
-    }
+    if (Math.abs(M[i][i]) < 1e-12) throw new ApiError(422, "E104", "Simulation equations are singular.");
     let sum = M[i][n];
     for (let j = i + 1; j < n; j++) sum -= M[i][j] * x[j];
     x[i] = sum / M[i][i];
   }
   return x;
+};
+
+// Mixed head/flow Newton solve for networks with active pressure controls.
+// Each unknown junction head gets a continuity equation; each active link gets
+// either an energy equation or its valve control equation.
+const solveControlledNetwork = (
+  nodes: SolverNode[],
+  links: SolverLink[],
+  nodeById: Map<string, number>,
+  nodeHead: number[],
+  linkFlow: Map<string, number>,
+): { iterations: number; maxHeadError: number; maxFlowError: number } => {
+  const unknownNodes = nodes.map((node, index) => node.fixedHeadM === undefined ? index : -1).filter((index) => index >= 0);
+  const headColumn = new Map(unknownNodes.map((nodeIndex, column) => [nodeIndex, column]));
+  const headCount = unknownNodes.length;
+  const variableCount = headCount + links.length;
+  for (const link of links) linkFlow.set(link.id, linkFlow.get(link.id) ?? 0.005);
+
+  for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
+    const matrix = Array.from({ length: variableCount }, () => new Array<number>(variableCount).fill(0));
+    const rhs = new Array<number>(variableCount).fill(0);
+    let maxMassLps = 0;
+    let maxControlErrorM = 0;
+
+    for (let ui = 0; ui < headCount; ui++) {
+      const nodeIndex = unknownNodes[ui];
+      let balance = -nodes[nodeIndex].baseDemandLps;
+      links.forEach((link, li) => {
+        const qLps = linkFlow.get(link.id)! * 1000;
+        if (nodeById.get(link.fromNodeId) === nodeIndex) {
+          balance -= qLps;
+          matrix[ui][headCount + li] = -1000;
+        }
+        if (nodeById.get(link.toNodeId) === nodeIndex) {
+          balance += qLps;
+          matrix[ui][headCount + li] = 1000;
+        }
+      });
+      rhs[ui] = -balance;
+      maxMassLps = Math.max(maxMassLps, Math.abs(balance));
+    }
+
+    links.forEach((link, li) => {
+      const row = headCount + li;
+      const from = nodeById.get(link.fromNodeId)!;
+      const to = nodeById.get(link.toNodeId)!;
+      const fromColumn = headColumn.get(from);
+      const toColumn = headColumn.get(to);
+      const q = linkFlow.get(link.id)!;
+      let residual: number;
+      if (link.type === "VALVE" && link.status === "ACTIVE" && link.valveType === "PRV") {
+        residual = nodeHead[to] - nodes[to].elevation - link.valveSetting!;
+        if (toColumn !== undefined) matrix[row][toColumn] = 1;
+      } else if (link.type === "VALVE" && link.status === "ACTIVE" && link.valveType === "PSV") {
+        residual = nodeHead[from] - nodes[from].elevation - link.valveSetting!;
+        if (fromColumn !== undefined) matrix[row][fromColumn] = 1;
+      } else if (link.type === "VALVE" && link.status === "ACTIVE" && link.valveType === "PBV") {
+        residual = nodeHead[from] - nodeHead[to] - link.valveSetting!;
+        if (fromColumn !== undefined) matrix[row][fromColumn] = 1;
+        if (toColumn !== undefined) matrix[row][toColumn] = -1;
+      } else if (link.type === "VALVE" && link.status === "ACTIVE" && link.valveType === "FCV") {
+        residual = q * 1000 - link.valveSetting!;
+        matrix[row][headCount + li] = 1000;
+      } else {
+        const { h, g } = linkHeadlossAndDerivative(link, q);
+        residual = h - nodeHead[from] + nodeHead[to];
+        if (fromColumn !== undefined) matrix[row][fromColumn] = -1;
+        if (toColumn !== undefined) matrix[row][toColumn] = 1;
+        matrix[row][headCount + li] = Math.max(g, 1e-9);
+      }
+      rhs[row] = -residual;
+      maxControlErrorM = Math.max(maxControlErrorM, Math.abs(residual));
+    });
+
+    if (maxMassLps <= FLOW_TOLERANCE_LPS && maxControlErrorM <= HEAD_TOLERANCE_M) {
+      return { iterations: iteration, maxHeadError: maxControlErrorM, maxFlowError: maxMassLps };
+    }
+    const correction = solveLinearSystem(matrix, rhs);
+    const headStep = Math.max(0, ...correction.slice(0, headCount).map(Math.abs));
+    const flowStep = Math.max(0, ...correction.slice(headCount).map(Math.abs));
+    const damping = Math.min(1, 20 / Math.max(headStep, 1e-12), 0.02 / Math.max(flowStep, 1e-12));
+    unknownNodes.forEach((nodeIndex, column) => { nodeHead[nodeIndex] += correction[column] * damping; });
+    links.forEach((link, li) => { linkFlow.set(link.id, linkFlow.get(link.id)! + correction[headCount + li] * damping); });
+  }
+  throw new ApiError(422, "E104", `Simulation did not converge after ${MAX_ITERATIONS} iterations with active valve controls.`);
 };
 
 export const runSimulation = (payload: SchematicPayload): SimulationResult => {
@@ -550,6 +671,43 @@ export const runSimulation = (payload: SchematicPayload): SimulationResult => {
       nodeById,
       linkFlow,
       nodeHead,
+    ));
+  } else if (activeLinks.some((link) => link.type === "VALVE" && link.status === "ACTIVE" &&
+      ["PRV", "PSV", "PBV"].includes(link.valveType ?? ""))) {
+    // First solve the same network with pressure valves fully open. PRVs and
+    // PSVs regulate only when their open-state pressure crosses the setting.
+    const openValves = (payload.links ?? []).map((link) => link.type === "VALVE" &&
+      link.input_params?.status === "ACTIVE" && ["PRV", "PSV", "PBV"].includes(String(link.input_params.valve_type))
+      ? { ...link, input_params: { ...link.input_params, status: "OPEN" } } : link);
+    try {
+      const baseline = runSimulation({ ...payload, links: openValves });
+      const baselineHeads = new Map(baseline.node_results.map((node) => {
+        const input = (payload.nodes ?? []).find((item) => item.id === node.id)!;
+        const head = input.type === "RESERVOIR" ? Number(input.input_params?.total_head)
+          : input.type === "TANK" ? node.hydraulic_head!
+            : node.pressure_head! + Number(input.input_params?.elevation);
+        return [node.id, head];
+      }));
+      for (const link of activeLinks) {
+        if (link.type !== "VALVE" || link.status !== "ACTIVE") continue;
+        if (link.valveType === "PRV") {
+          const downstream = solverNodes[nodeById.get(link.toNodeId)!];
+          if (baselineHeads.get(link.toNodeId)! - downstream.elevation <= link.valveSetting! + HEAD_TOLERANCE_M) {
+            link.status = "OPEN";
+          }
+        } else if (link.valveType === "PSV") {
+          const upstream = solverNodes[nodeById.get(link.fromNodeId)!];
+          if (baselineHeads.get(link.fromNodeId)! - upstream.elevation >= link.valveSetting! - HEAD_TOLERANCE_M) {
+            link.status = "OPEN";
+          }
+        }
+      }
+    } catch (error) {
+      if (!(error instanceof ApiError && error.errorCode === "E104")) throw error;
+      // An open-state singularity does not preclude a feasible controlled run.
+    }
+    ({ iterations, maxHeadError, maxFlowError } = solveControlledNetwork(
+      solverNodes, activeLinks, nodeById, nodeHead, linkFlow,
     ));
   } else {
     // Looped networks: seed GGA with demand-driven flows and source-level heads.
@@ -620,7 +778,6 @@ export const runSimulation = (payload: SchematicPayload): SimulationResult => {
         for (const link of activeLinks) {
           const fromIdx = linkFromIdx.get(link.id)!;
           const toIdx = linkToIdx.get(link.id)!;
-          if (link.type === "VALVE" && link.valveType === "FCV" && link.status === "ACTIVE") continue;
           if (fromIdx === nodeIdx) netInflow -= linkFlow.get(link.id)!;
           if (toIdx === nodeIdx) netInflow += linkFlow.get(link.id)!;
         }
@@ -643,9 +800,9 @@ export const runSimulation = (payload: SchematicPayload): SimulationResult => {
         const Q = linkFlow.get(link.id)!;
         const { h, g } = linkHeadlossAndDerivative(link, Q);
         const F1 = h - (nodeHead[fromIdx] - nodeHead[toIdx]);
-        const dH = (unknownMap.has(fromIdx) ? deltaH[unknownMap.get(fromIdx)!] : 0) -
-          (unknownMap.has(toIdx) ? deltaH[unknownMap.get(toIdx)!] : 0);
-        const deltaQ = (-F1 + dH) / Math.max(g, 1e-12);
+        // F1 uses the updated heads, so adding deltaH again would count the
+        // head correction twice and can make loop flows diverge.
+        const deltaQ = -F1 / Math.max(g, 1e-12);
         const newQ = Q + deltaQ;
         linkFlow.set(link.id, newQ);
         maxFlowError = Math.max(maxFlowError, Math.abs(deltaQ) * 1000);
@@ -654,7 +811,7 @@ export const runSimulation = (payload: SchematicPayload): SimulationResult => {
       // Divergence guard: abort only if head residuals blow up repeatedly.
       if (maxHeadError > previousHeadCorrectionNorm) {
         divergenceCount++;
-        if (divergenceCount >= 20) {
+        if (divergenceCount >= 5) {
           throw new ApiError(
             422,
             "E104",
@@ -678,21 +835,61 @@ export const runSimulation = (payload: SchematicPayload): SimulationResult => {
     }
   }
 
-  // Post-process PRV active valves: clamp downstream head to setting.
-  for (const link of activeLinks) {
-    if (link.type === "VALVE" && link.valveType === "PRV" && link.status === "ACTIVE" && link.valveSetting !== undefined) {
-      const toIdx = linkToIdx.get(link.id)!;
-      const setting = link.valveSetting;
-      if (nodeHead[toIdx] > setting) nodeHead[toIdx] = setting;
+  // Convergence needs the actual network equations, not only small Newton
+  // steps. A stalled iteration can otherwise look successful.
+  let massResidualLps = 0;
+  let energyResidualM = 0;
+  for (let nodeIdx = 0; nodeIdx < nNodes; nodeIdx++) {
+    if (nodeFixed[nodeIdx]) continue;
+    let balanceM3s = -nodeDemand[nodeIdx];
+    for (const link of activeLinks) {
+      const flow = linkFlow.get(link.id)!;
+      if (linkFromIdx.get(link.id) === nodeIdx) balanceM3s -= flow;
+      if (linkToIdx.get(link.id) === nodeIdx) balanceM3s += flow;
     }
+    massResidualLps = Math.max(massResidualLps, Math.abs(balanceM3s) * 1000);
   }
+  for (const link of activeLinks) {
+    const flow = linkFlow.get(link.id)!;
+    if (link.type === "VALVE" && link.status === "ACTIVE") {
+      const fromIndex = linkFromIdx.get(link.id)!;
+      const toIndex = linkToIdx.get(link.id)!;
+      const drop = nodeHead[fromIndex] - nodeHead[toIndex];
+      if (link.valveType === "PRV") {
+        const datum = solverNodes[fromIndex].type === "RESERVOIR"
+          ? solverNodes[toIndex].elevation : solverNodes[fromIndex].elevation;
+        if (link.valveSetting! >= nodeHead[fromIndex] - datum || drop < -HEAD_TOLERANCE_M) {
+          throw new ApiError(422, "E203", `PRV '${link.label}' setting is not below the available upstream pressure.`, link.id);
+        }
+      }
+      if (drop < -HEAD_TOLERANCE_M && ["PSV", "PBV", "FCV"].includes(link.valveType ?? "")) {
+        throw new ApiError(422, "E104", `Valve '${link.label}' would need to add pressure to meet its setting.`, link.id);
+      }
+    }
+    if (link.type === "PUMP" && flow < -FLOW_TOLERANCE_LPS / 1000) {
+      throw new ApiError(422, "E200", `Pump '${link.label}' would flow backwards. Reverse its endpoints.`, link.id);
+    }
+    if (link.type === "PUMP" && Math.abs(flow) <= FLOW_TOLERANCE_LPS / 1000) {
+      throw new ApiError(422, "E104", `Pump '${link.label}' is operating at dead-head with no downstream flow.`, link.id);
+    }
+    if (link.type === "VALVE" && link.status === "ACTIVE" &&
+        ["PRV", "PSV", "PBV", "FCV"].includes(link.valveType ?? "")) continue;
+    const actualDrop = nodeHead[linkFromIdx.get(link.id)!] - nodeHead[linkToIdx.get(link.id)!];
+    const expectedDrop = linkHeadlossAndDerivative(link, flow).h;
+    energyResidualM = Math.max(energyResidualM, Math.abs(actualDrop - expectedDrop));
+  }
+  if (massResidualLps > FLOW_TOLERANCE_LPS || energyResidualM > HEAD_TOLERANCE_M) {
+    throw new ApiError(422, "E104", `Simulation equations remain unbalanced (mass ${massResidualLps.toFixed(4)} L/s, head ${energyResidualM.toFixed(4)} m).`);
+  }
+  maxHeadError = Math.max(maxHeadError, energyResidualM);
+  maxFlowError = Math.max(maxFlowError, massResidualLps);
 
   // Build results.
   const nodeResults = solverNodes.map((node, idx) => {
     const head = nodeHead[idx];
     if (node.type === "JUNCTION") {
       const pressureHead = head - node.elevation;
-      if (pressureHead < 0) {
+      if (pressureHead < -10) {
         warnings.push(`E105: Negative pressure (${pressureHead.toFixed(3)} m) detected at node '${node.label}'. Check elevations and demands.`);
       }
       return {
@@ -751,18 +948,22 @@ export const runSimulation = (payload: SchematicPayload): SimulationResult => {
 
     if (link.type === "PUMP") {
       const headAdded = -h;
-      const powerKw = (G_MPS2 * 1000 * Math.abs(Qm3s) * headAdded) / 1000;
+      // A steady-state snapshot has no duration. Report the equivalent energy
+      // for one hour of operation (numerically equal to hydraulic power in kW).
+      const energyKwhOneHour = G_MPS2 * Math.abs(Qm3s) * headAdded;
       if (link.pumpCurve && link.pumpCurve.length >= 2) {
-        const interp = interpolatePumpCurve(link.pumpCurve, Math.abs(Qlps));
+        const interp = interpolatePumpCurve(link.pumpCurve, Math.abs(Qlps) / (link.speed ?? 1));
         if (!interp.withinRange) {
           warnings.push(`E106: Pump '${link.label}' operating point (${Math.abs(Qlps).toFixed(3)} L/s, ${headAdded.toFixed(3)} m) is outside its curve. Results may be unreliable.`);
         }
       }
-      return { id: link.id, flow_rate: Qlps, head_added: headAdded, energy: powerKw };
+      return { id: link.id, flow_rate: Qlps, head_added: headAdded, energy: energyKwhOneHour };
     }
 
     if (link.type === "VALVE") {
-      return { id: link.id, flow_rate: Qlps, pressure_drop: h };
+      const fromHead = nodeHead[nodeById.get(link.fromNodeId)!];
+      const toHead = nodeHead[nodeById.get(link.toNodeId)!];
+      return { id: link.id, flow_rate: Qlps, pressure_drop: fromHead - toHead };
     }
 
     // FILTER
@@ -770,7 +971,7 @@ export const runSimulation = (payload: SchematicPayload): SimulationResult => {
   });
 
   return {
-    status: warnings.length > 0 ? "success" : "success",
+    status: "success",
     node_results: nodeResults,
     link_results: linkResults,
     iterations,

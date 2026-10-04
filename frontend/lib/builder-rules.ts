@@ -57,7 +57,8 @@ export const validateCurve = (field: Extract<FieldDef, { kind: "curve" }>, value
   if (points.length < 2) return `${field.label} needs at least 2 points.`;
 
   const parsed = points.map((point) => ({ flow: Number(point.flow), y: Number(point[field.yKey]) }));
-  if (parsed.some((point) => !Number.isFinite(point.flow) || !Number.isFinite(point.y))) {
+  if (points.some((point) => point.flow === "" || point[field.yKey] === "") ||
+      parsed.some((point) => !Number.isFinite(point.flow) || !Number.isFinite(point.y))) {
     return "Each curve row needs numeric flow and value entries.";
   }
 

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import BuilderPage from '@/app/builder/page'
 
@@ -172,6 +172,30 @@ describe('BuilderPage', () => {
         const nameInput = screen.getByRole('textbox', { name: /schematic name/i })
         fireEvent.change(nameInput, { target: { value: 'Renamed schematic' } })
         expect(screen.getByLabelText(/unsaved changes/i)).toBeInTheDocument()
+    })
+
+    it('saves an empty draft with a blank name and still blocks analysis', async () => {
+        const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+            if (url === '/api/v1/schematics' && init?.method === 'POST') {
+                const draft = JSON.parse(String(init.body))
+                return jsonResponse({ ...draft, id: 'draft-1', created_at: 'now', updated_at: 'now' })
+            }
+            if (url === '/api/v1/simulate') {
+                return jsonResponse({ detail: { error_code: 'E100', message: 'Network has no Reservoir or Tank.' } }, { status: 400 })
+            }
+            return jsonResponse([])
+        })
+        vi.stubGlobal('fetch', fetchMock)
+        render(<BuilderPage />)
+        fireEvent.change(screen.getByRole('textbox', { name: /schematic name/i }), { target: { value: '' } })
+        fireEvent.click(screen.getByRole('button', { name: /^save$/i }))
+        await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/v1/schematics', expect.objectContaining({ method: 'POST' })))
+        const saveCall = fetchMock.mock.calls.find(([url, init]) => url === '/api/v1/schematics' && init?.method === 'POST')!
+        expect(JSON.parse(String(saveCall[1].body))).toMatchObject({ name: '', nodes: [], links: [] })
+        await waitFor(() => expect(screen.queryByLabelText(/unsaved changes/i)).not.toBeInTheDocument())
+        fireEvent.click(screen.getByRole('button', { name: /^simulate$/i }))
+        expect(await screen.findByText(/network has no reservoir or tank/i)).toBeInTheDocument()
+        expect(fetchMock.mock.calls.some(([url]) => url === '/api/v1/simulate')).toBe(true)
     })
 
     it('shows navigation guard when starting new with dirty state', () => {

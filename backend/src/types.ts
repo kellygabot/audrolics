@@ -127,6 +127,7 @@ export type SimulationPayload = {
   measurements?: MeasurementPayload[];
   input_params?: Record<string, unknown>;
   thresholds?: SchematicPayload["thresholds"];
+  filter_multipliers?: SchematicPayload["filter_multipliers"];
 };
 
 export type AnomalyMeasurementInput = {
@@ -150,6 +151,7 @@ export type SuspectSegment = {
   signature: "LEAK" | "BLOCKAGE" | "UNKNOWN";
   pipe_ids: string[];
   length_m: number;
+  consistency: number;
 };
 
 export type AnomalyPayload = {
@@ -158,6 +160,7 @@ export type AnomalyPayload = {
   nodes?: NodePayload[];
   links?: LinkPayload[];
   thresholds?: SchematicPayload["thresholds"];
+  filter_multipliers?: SchematicPayload["filter_multipliers"];
 };
 
 export type AnomalyResult = {
@@ -171,5 +174,5 @@ export type AuditLogEntry = {
   user_id: string;
   schematic_id?: string;
   network_size: number;
-  status: "SUCCESS" | "FAILED";
+  status: "SUCCESS" | "FAILED" | "NON_CONVERGENCE";
 };

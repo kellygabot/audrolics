@@ -39,6 +39,7 @@ describe("Anomaly detection", () => {
     expect(result.flagged_points).toHaveLength(2);
     expect(result.flagged_points[0].residual).toBeCloseTo(5, 3);
     expect(result.suspect_segments.length).toBeGreaterThan(0);
+    expect(result.suspect_segments[0].consistency).toBeCloseTo(Math.abs(5 - (-3)) / 100);
     expect(result.warnings).not.toContain(expect.stringMatching(/E300/));
   });
 
@@ -59,9 +60,9 @@ describe("Anomaly detection", () => {
   it("returns E301 when conflicting leak and blockage signatures appear", () => {
     const { nodes, links } = lineNetwork();
     const measurements = [
-      { element_id: "j1", type: "PRESSURE_HEAD" as const, value: 45 },
+      { element_id: "j1", type: "PRESSURE_HEAD" as const, value: 55 },
       { element_id: "j2", type: "PRESSURE_HEAD" as const, value: 40 },
-      { element_id: "j3", type: "PRESSURE_HEAD" as const, value: 45 },
+      { element_id: "j3", type: "PRESSURE_HEAD" as const, value: 35 },
     ];
     const expected = new Map<string, number>([
       ["j1", 50],
@@ -73,5 +74,36 @@ describe("Anomaly detection", () => {
 
     expect(result.flagged_points).toHaveLength(3);
     expect(result.warnings.some((w) => w.includes("E301"))).toBe(true);
+    expect(result.suspect_segments.every((segment) => segment.signature !== "UNKNOWN")).toBe(true);
+  });
+
+  it("orients blockage by simulated flow rather than measurement order", () => {
+    const { nodes, links } = lineNetwork();
+    const expected = new Map<string, number>([["j1", 50], ["j2", 45], ["p1", 10]]);
+    const result = detectAnomalies([
+      { element_id: "j2", type: "PRESSURE_HEAD", value: 40 },
+      { element_id: "j1", type: "PRESSURE_HEAD", value: 55 },
+    ], expected, nodes, links, thresholds);
+    expect(result.suspect_segments[0]).toMatchObject({ from: "j1", to: "j2", signature: "BLOCKAGE" });
+  });
+
+  it("does not warn about localization when all measurements agree with the model", () => {
+    const { nodes, links } = lineNetwork();
+    const result = detectAnomalies([
+      { element_id: "j1", type: "PRESSURE_HEAD", value: 50 },
+      { element_id: "j2", type: "PRESSURE_HEAD", value: 45 },
+    ], new Map([["j1", 50], ["j2", 45]]), nodes, links, thresholds);
+    expect(result.flagged_points).toEqual([]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("uses the larger percent-or-absolute threshold and requires a strict exceedance", () => {
+    const { nodes, links } = lineNetwork();
+    const result = detectAnomalies([
+      { element_id: "j1", type: "PRESSURE_HEAD", value: 52.5 }, // 5% of 50: exactly on boundary
+      { element_id: "j2", type: "PRESSURE_HEAD", value: 47.6 }, // 5% of 45: 2.25, exceeded
+      { element_id: "p1", type: "FLOW_RATE", value: 10.5 }, // 10% of 10: 1, not exceeded
+    ], new Map([["j1", 50], ["j2", 45], ["p1", 10]]), nodes, links, thresholds);
+    expect(result.flagged_points.map((point) => point.element_id)).toEqual(["j2"]);
   });
 });

@@ -6,7 +6,7 @@ const schematicSchema = new mongoose.Schema(
   {
     id: { type: String, required: true },
     user_id: { type: String, required: true },
-    name: { type: String, required: true },
+    name: { type: String, default: "" },
     nodes: { type: [flexibleSchema], default: [] },
     links: { type: [flexibleSchema], default: [] },
     measurements: { type: [flexibleSchema], default: [] },

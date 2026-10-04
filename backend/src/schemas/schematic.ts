@@ -26,7 +26,7 @@ export const normalizeSchematicPayload = (body: unknown): SchematicPayload => {
   if (!isRecord(body)) throw new ValidationError(["E200 payload must be an object"]);
 
   const payload: SchematicPayload = {
-    name: requireString(body, "name"),
+    name: requireText(body, "name"),
     nodes: normalizeNodes(body.nodes),
     links: normalizeLinks(body.links),
     measurements: normalizeMeasurements(body.measurements),
@@ -41,6 +41,61 @@ export const normalizeSchematicPayload = (body: unknown): SchematicPayload => {
   return payload;
 };
 
+// Persistence accepts unfinished editor state. Hydraulic and topology checks
+// belong to the analysis parser above, not to saving a draft.
+export const normalizeDraftSchematicPayload = (body: unknown): SchematicPayload => {
+  if (!isRecord(body)) throw new ValidationError(["E200 payload must be an object"]);
+  const payload: SchematicPayload = {
+    name: requireText(body, "name"),
+    nodes: normalizeDraftNodes(body.nodes),
+    links: normalizeDraftLinks(body.links),
+    measurements: normalizeMeasurements(body.measurements),
+    canvas_state: normalizeCanvasState(body.canvas_state),
+    thresholds: normalizeThresholds(body.thresholds),
+    filter_multipliers: normalizeFilterMultipliers(body.filter_multipliers),
+    styling: normalizeStyling(body.styling),
+    visibility: normalizeVisibility(body.visibility),
+  };
+  const errors: string[] = [];
+  requireUnique((payload.nodes ?? []).map((node) => node.id), "Node ids", errors);
+  requireUnique((payload.links ?? []).map((link) => link.id), "Link ids", errors);
+  requireUnique([...(payload.nodes ?? []).map((node) => node.id), ...(payload.links ?? []).map((link) => link.id)], "Element ids", errors);
+  if (errors.length) throw new ValidationError(errors);
+  return payload;
+};
+
+const normalizeDraftNodes = (value: unknown): NodePayload[] => {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new ValidationError(["E200 nodes must be an array"]);
+  return value.map((node) => {
+    if (!isRecord(node)) throw new ValidationError(["E200 node must be an object"]);
+    const type = requireString(node, "type");
+    if (!NODE_TYPES.has(type)) throw new ValidationError([`E200 invalid node type: ${type}`]);
+    return {
+      id: requireString(node, "id"), label: requireText(node, "label"), type: type as NodePayload["type"],
+      x: requireNumber(node, "x"), y: requireNumber(node, "y"),
+      input_params: { ...asParams(node.input_params) },
+      computed: normalizeNodeComputed(type, node.computed),
+    };
+  });
+};
+
+const normalizeDraftLinks = (value: unknown): LinkPayload[] => {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new ValidationError(["E200 links must be an array"]);
+  return value.map((link) => {
+    if (!isRecord(link)) throw new ValidationError(["E200 link must be an object"]);
+    const type = requireString(link, "type");
+    if (!LINK_TYPES.has(type)) throw new ValidationError([`E200 invalid link type: ${type}`]);
+    return {
+      id: requireString(link, "id"), label: requireText(link, "label"), type: type as LinkPayload["type"],
+      from_node_id: optionalString(link.from_node_id), to_node_id: optionalString(link.to_node_id),
+      points: normalizePoints(link.points), input_params: { ...asParams(link.input_params) },
+      computed: normalizeLinkComputed(type, link.computed),
+    };
+  });
+};
+
 const normalizeNodes = (value: unknown): NodePayload[] => {
   if (value === undefined) return [];
   if (!Array.isArray(value)) throw new ValidationError(["E200 nodes must be an array"]);
@@ -51,7 +106,7 @@ const normalizeNodes = (value: unknown): NodePayload[] => {
     if (!NODE_TYPES.has(type)) throw new ValidationError([`E200 node type must be one of ${[...NODE_TYPES].join(", ")}`]);
     return {
       id: requireString(node, "id"),
-      label: requireString(node, "label"),
+      label: requireText(node, "label"),
       type: type as NodePayload["type"],
       x: requireNumber(node, "x"),
       y: requireNumber(node, "y"),
@@ -71,7 +126,7 @@ const normalizeLinks = (value: unknown): LinkPayload[] => {
     if (!LINK_TYPES.has(type)) throw new ValidationError([`E200 link type must be one of ${[...LINK_TYPES].join(", ")}`]);
     return {
       id: requireString(link, "id"),
-      label: requireString(link, "label"),
+      label: requireText(link, "label"),
       type: type as LinkPayload["type"],
       from_node_id: optionalString(link.from_node_id),
       to_node_id: optionalString(link.to_node_id),
@@ -181,18 +236,18 @@ const normalizeNodeInputParams = (type: string, value: unknown): Record<string, 
   const params = asParams(value);
   if (type === "JUNCTION") {
     return {
-      elevation: requireNumber(params, "elevation"),
-      base_demand: requireNumber(params, "base_demand"),
+      elevation: requireInputNumber(params, "elevation"),
+      base_demand: requireInputNumber(params, "base_demand"),
       ...(params.demand_pattern === undefined ? {} : { demand_pattern: optionalString(params.demand_pattern) }),
     };
   }
-  if (type === "RESERVOIR") return { total_head: requireNumber(params, "total_head") };
+  if (type === "RESERVOIR") return { total_head: requireInputNumber(params, "total_head") };
   return {
-    elevation: requireNumber(params, "elevation"),
-    diameter: requireNumber(params, "diameter"),
-    min_level: requireNumber(params, "min_level"),
-    max_level: requireNumber(params, "max_level"),
-    initial_level: requireNumber(params, "initial_level"),
+    elevation: requireInputNumber(params, "elevation"),
+    diameter: requireInputNumber(params, "diameter"),
+    min_level: requireInputNumber(params, "min_level"),
+    max_level: requireInputNumber(params, "max_level"),
+    initial_level: requireInputNumber(params, "initial_level"),
   };
 };
 
@@ -200,17 +255,17 @@ const normalizeLinkInputParams = (type: string, value: unknown): Record<string, 
   const params = asParams(value);
   if (type === "PIPE") {
     return {
-      length: requireNumber(params, "length"),
-      diameter: requireNumber(params, "diameter"),
-      roughness: params.roughness === undefined ? 140 : requireNumber(params, "roughness"),
-      minor_loss_coeff: params.minor_loss_coeff === undefined ? 0 : requireNumber(params, "minor_loss_coeff"),
+      length: requireInputNumber(params, "length"),
+      diameter: requireInputNumber(params, "diameter"),
+      roughness: params.roughness === undefined ? 140 : requireInputNumber(params, "roughness"),
+      minor_loss_coeff: params.minor_loss_coeff === undefined ? 0 : requireInputNumber(params, "minor_loss_coeff"),
       status: params.status === undefined ? "OPEN" : requireString(params, "status"),
     };
   }
   if (type === "PUMP") {
     return {
-      ...(params.rated_power === undefined ? {} : { rated_power: requireNumber(params, "rated_power") }),
-      speed: requireNumber(params, "speed"),
+      ...(isBlank(params.rated_power) ? {} : { rated_power: requireInputNumber(params, "rated_power") }),
+      speed: requireInputNumber(params, "speed"),
       status: requireString(params, "status"),
       pump_curve: normalizeCurve(params.pump_curve, "head"),
     };
@@ -218,16 +273,17 @@ const normalizeLinkInputParams = (type: string, value: unknown): Record<string, 
   if (type === "VALVE") {
     return {
       valve_type: requireString(params, "valve_type"),
-      diameter: requireNumber(params, "diameter"),
-      ...(params.valve_setting === undefined ? {} : { valve_setting: requireNumber(params, "valve_setting") }),
+      diameter: requireInputNumber(params, "diameter"),
+      ...(isBlank(params.valve_setting) ? {} : { valve_setting: requireInputNumber(params, "valve_setting") }),
       status: requireString(params, "status"),
       gpv_curve: normalizeCurve(params.gpv_curve, "headloss"),
     };
   }
   return {
-    mesh_size: requireNumber(params, "mesh_size"),
-    minor_loss_coeff: requireNumber(params, "minor_loss_coeff"),
+    mesh_size: requireInputNumber(params, "mesh_size"),
+    minor_loss_coeff: requireInputNumber(params, "minor_loss_coeff"),
     filter_status: requireString(params, "filter_status"),
+    ...(params.diameter === undefined ? {} : { diameter: requireInputNumber(params, "diameter") }),
   };
 };
 
@@ -251,12 +307,12 @@ const normalizeLinkComputed = (type: string, value: unknown): Record<string, unk
     };
   }
   if (type === "PUMP") {
-    return { flow: nullableNumber(computed.flow), head_added: nullableNumber(computed.head_added), energy: nullableNumber(computed.energy) };
+    return { flow_rate: nullableNumber(computed.flow_rate ?? computed.flow), head_added: nullableNumber(computed.head_added), energy: nullableNumber(computed.energy) };
   }
   if (type === "VALVE") {
-    return { flow: nullableNumber(computed.flow), pressure_drop: nullableNumber(computed.pressure_drop) };
+    return { flow_rate: nullableNumber(computed.flow_rate ?? computed.flow), pressure_drop: nullableNumber(computed.pressure_drop) };
   }
-  return { headloss: nullableNumber(computed.headloss) };
+  return { flow_rate: nullableNumber(computed.flow_rate), headloss: nullableNumber(computed.headloss) };
 };
 
 const validateSchematic = (payload: SchematicPayload) => {
@@ -267,13 +323,27 @@ const validateSchematic = (payload: SchematicPayload) => {
   const linkIds = new Set(links.map((link) => link.id));
 
   requireUnique(nodes.map((node) => node.id), "Node ids", errors);
-  requireUnique(nodes.map((node) => node.label), "Node labels", errors);
   requireUnique(links.map((link) => link.id), "Link ids", errors);
-  requireUnique(links.map((link) => link.label), "Link labels", errors);
+  requireUnique([...nodes.map((node) => node.id), ...links.map((link) => link.id)], "Element ids", errors);
 
   for (const node of nodes) validateNode(node, errors);
   for (const link of links) validateLink(link, nodeIds, errors);
   for (const measurement of payload.measurements ?? []) validateMeasurement(measurement, nodeIds, linkIds, errors);
+
+  const thresholds = payload.thresholds;
+  if (thresholds) {
+    for (const [key, value] of Object.entries(thresholds)) {
+      if (value < 0 || (key.endsWith("_pct") && value > 100)) {
+        errors.push(`E200 ${key} must be ${key.endsWith("_pct") ? "between 0 and 100" : "non-negative"}`);
+      }
+    }
+  }
+  const multipliers = payload.filter_multipliers;
+  if (multipliers) {
+    for (const [key, value] of Object.entries(multipliers)) {
+      if (value <= 0) errors.push(`E200 filter multiplier ${key} must be positive`);
+    }
+  }
 
   if (errors.length > 0) throw new ValidationError(errors);
 };
@@ -328,6 +398,7 @@ const validateLink = (link: LinkPayload, nodeIds: Set<string>, errors: string[])
   } else {
     requireRange(link.label, params, "mesh_size", 0, undefined, errors, true);
     requireRange(link.label, params, "minor_loss_coeff", 0, undefined, errors);
+    if (params.diameter !== undefined) requireRange(link.label, params, "diameter", 0, undefined, errors, true);
     requireChoice(link.label, params, "filter_status", ["CLEAN", "PARTIALLY_CLOGGED", "CLOGGED"], errors);
   }
 };
@@ -387,7 +458,7 @@ const normalizeCurve = (value: unknown, yKey: "head" | "headloss") => {
   if (!Array.isArray(value)) throw new ValidationError(["E201 curve must be an array"]);
   return value.map((point) => {
     if (!isRecord(point)) throw new ValidationError(["E201 curve point must be an object"]);
-    return { flow: requireNumber(point, "flow"), [yKey]: requireNumber(point, yKey) };
+    return { flow: requireInputNumber(point, "flow"), [yKey]: requireInputNumber(point, yKey) };
   });
 };
 
@@ -430,6 +501,20 @@ const requireString = (record: Record<string, unknown>, key: string) => {
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new ValidationError([`E200 ${key} must be a non-empty string`]);
   }
+  return value;
+};
+
+const requireText = (record: Record<string, unknown>, key: string) => {
+  if (typeof record[key] !== "string") throw new ValidationError([`E200 ${key} must be a string`]);
+  return record[key] as string;
+};
+
+const isBlank = (value: unknown) => value === undefined || value === null || value === "";
+
+const requireInputNumber = (record: Record<string, unknown>, key: string) => {
+  const value = record[key];
+  if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))) return Number(value);
+  if (!isNumber(value)) throw new ValidationError([`E200 ${key} must be a number`]);
   return value;
 };
 

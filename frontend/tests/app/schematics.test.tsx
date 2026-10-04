@@ -89,6 +89,13 @@ describe("SchematicsPage", () => {
     expect(screen.getByText("No Audrolics files created yet")).toBeInTheDocument();
   });
 
+  it("shows a usable title for a saved blank name", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse([{ id: "draft-1", name: "", updated_at: "2024-01-15T10:00:00Z" }])));
+    render(<SchematicsPage />);
+    expect(await screen.findByText("Untitled schematic")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open Untitled schematic" })).toBeInTheDocument();
+  });
+
   it("New Schematic button is in the body, not the header", async () => {
     render(<SchematicsPage />);
 

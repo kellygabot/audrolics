@@ -16,7 +16,6 @@
 import type {
   LinkPayload,
   NodePayload,
-  SchematicPayload,
   AnomalyMeasurementInput,
   AnomalyResult,
   FlaggedPoint,
@@ -28,7 +27,6 @@ import {
   shortestPath,
   classifySignature,
   calculateConfidence,
-  type Graph,
 } from "./localizer.js";
 
 /**
@@ -60,7 +58,10 @@ export const detectAnomalies = (
   const flaggedByElementId = new Map<string, FlaggedPoint>();
 
   for (const m of measurements) {
-    const expected = expectedValues.get(m.element_id) ?? 0;
+    const expected = expectedValues.get(m.element_id);
+    if (expected === undefined || !Number.isFinite(expected)) {
+      throw new Error(`Missing simulated expected value for '${m.element_id}'.`);
+    }
     const residual = m.value - expected;
     const threshold = getThreshold(m.type, expected, thr);
     if (Math.abs(residual) > threshold) {
@@ -80,7 +81,7 @@ export const detectAnomalies = (
     return {
       flagged_points: flagged,
       suspect_segments: [],
-      warnings: [`E300: Insufficient measurements for segment narrowing. ${flagged.length} point(s) provided.`],
+      warnings: flagged.length === 0 ? [] : [`E300: Insufficient flagged measurements for segment narrowing. ${flagged.length} point(s) flagged.`],
     };
   }
 
@@ -99,14 +100,18 @@ export const detectAnomalies = (
       const path = shortestPath(a.element_id, b.element_id, graph);
       if (!path || path.linkIds.length === 0) continue;
 
-      const signature = classifySignature(a.residual, b.residual, path.linkIds, flaggedByElementId);
+      const firstLink = linkById.get(path.linkIds[0]);
+      const firstFlow = expectedValues.get(path.linkIds[0]);
+      const followsLink = firstLink?.from_node_id === path.nodeIds[0];
+      const aUpstream = firstFlow === undefined ? followsLink : (firstFlow >= 0 ? followsLink : !followsLink);
+      const upstream = aUpstream ? a : b;
+      const downstream = aUpstream ? b : a;
+      const orderedLinks = aUpstream ? path.linkIds : [...path.linkIds].reverse();
+      const signature = classifySignature(upstream.residual, downstream.residual, orderedLinks, flaggedByElementId);
       if (signature === "UNKNOWN") continue;
 
       const pipeCount = Math.max(path.linkIds.length, 1);
-      const confidence = calculateConfidence(a, b, thr, pipeCount);
-
-      const from = signature === "BLOCKAGE" && a.residual < 0 && b.residual > 0 ? b.element_id : a.element_id;
-      const to = signature === "BLOCKAGE" && a.residual < 0 && b.residual > 0 ? a.element_id : b.element_id;
+      const confidence = calculateConfidence(upstream, downstream, thr, pipeCount);
 
       const lengthM = path.linkIds.reduce((sum, linkId) => {
         const link = linkById.get(linkId);
@@ -114,28 +119,40 @@ export const detectAnomalies = (
       }, 0);
 
       segments.push({
-        from,
-        to,
+        from: upstream.element_id,
+        to: downstream.element_id,
         confidence,
         signature,
         pipe_ids: path.linkIds,
         length_m: lengthM,
+        // SRS §4.5 defines this score but does not give a cutoff. Expose the
+        // value without applying an arbitrary segment threshold.
+        consistency: Math.abs(upstream.residual - downstream.residual) / Math.max(lengthM, 1),
       });
     }
   }
 
   const warnings: string[] = [];
 
-  // Detect conflicting signatures.
-  const hasLeak = segments.some((s) => s.signature === "LEAK");
-  const hasBlockage = segments.some((s) => s.signature === "BLOCKAGE");
-  if (hasLeak && hasBlockage) {
-    warnings.push("E301: Conflicting residuals detected on segment. Manual review required.");
+  // Opposing signatures on the same pipe must be reviewed manually. Different
+  // signatures on separate pipe segments may represent separate failures.
+  const conflicted = new Set<number>();
+  for (let i = 0; i < segments.length; i++) {
+    for (let j = i + 1; j < segments.length; j++) {
+      if (segments[i].signature !== segments[j].signature &&
+          segments[i].pipe_ids.some((id) => segments[j].pipe_ids.includes(id))) {
+        conflicted.add(i);
+        conflicted.add(j);
+      }
+    }
   }
+  if (conflicted.size > 0) warnings.push("E301: Conflicting signatures on the same segment. Check field measurements manually.");
+  const consistentSegments = segments.filter((_, index) => !conflicted.has(index));
 
   // Rank by confidence descending and keep top 3.
-  segments.sort((a, b) => b.confidence - a.confidence);
-  const topSegments = segments.slice(0, 3);
+  consistentSegments.sort((a, b) => b.confidence - a.confidence);
+  if (consistentSegments.length > 2) warnings.push("Multiple anomaly signatures detected. Review all highlighted segments.");
+  const topSegments = consistentSegments.slice(0, 3);
 
   return {
     flagged_points: flagged,

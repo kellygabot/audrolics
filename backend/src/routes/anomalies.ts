@@ -24,6 +24,7 @@
       links: body.links ?? [],
       measurements: [],
       thresholds: body.thresholds,
+      filter_multipliers: body.filter_multipliers,
     };
     return normalizeSchematicPayload(raw);
   };
@@ -33,11 +34,16 @@
     nodes: NodePayload[],
     links: LinkPayload[],
   ): void => {
-    const nodeIds = new Set(nodes.map((n) => n.id));
+    const nodeById = new Map(nodes.map((n) => [n.id, n]));
     const linkIds = new Set(links.map((l) => l.id));
 
     for (const m of measurements) {
-      if (nodeIds.has(m.element_id)) {
+      if (!m || typeof m.element_id !== "string" ||
+          (m.type !== "PRESSURE_HEAD" && m.type !== "FLOW_RATE") ||
+          typeof m.value !== "number" || !Number.isFinite(m.value)) {
+        throw new ApiError(422, "E200", "Each measurement needs an element_id, valid type, and finite value.");
+      }
+      if (nodeById.has(m.element_id)) {
         if (m.type !== "PRESSURE_HEAD") {
           throw new ApiError(
             422,
@@ -46,6 +52,9 @@
             m.element_id,
             "type",
           );
+        }
+        if (nodeById.get(m.element_id)?.type === "RESERVOIR") {
+          throw new ApiError(422, "E200", "Reservoirs do not produce a pressure-head measurement. Measure a junction or tank.", m.element_id, "element_id");
         }
       } else if (linkIds.has(m.element_id)) {
         if (m.type !== "FLOW_RATE") {
@@ -69,45 +78,39 @@
     }
   };
 
-  const extractExpectedValues = (
-    measurements: AnomalyPayload["measurements"],
-    nodes: NodePayload[],
-    links: LinkPayload[],
-  ): Map<string, number> | null => {
-    const nodeById = new Map(nodes.map((n) => [n.id, n]));
-    const linkById = new Map(links.map((l) => [l.id, l]));
-    const expected = new Map<string, number>();
-
-    for (const m of measurements) {
-      if (m.type === "PRESSURE_HEAD") {
-        const node = nodeById.get(m.element_id);
-        const value = node?.computed?.pressure_head;
-        if (typeof value !== "number") return null;
-        expected.set(m.element_id, value);
-      } else {
-        const link = linkById.get(m.element_id);
-        const value = link?.computed?.flow_rate;
-        if (typeof value !== "number") return null;
-        expected.set(m.element_id, value);
-      }
-    }
-
-    return expected;
-  };
-
   const expectedValuesFromSimulation = (
     measurements: AnomalyPayload["measurements"],
     result: ReturnType<typeof runSimulation>,
+    nodes: NodePayload[],
   ): Map<string, number> => {
     const nodeById = new Map(result.node_results.map((n) => [n.id, n]));
+    const inputNodeById = new Map(nodes.map((n) => [n.id, n]));
     const linkById = new Map(result.link_results.map((l) => [l.id, l]));
     const expected = new Map<string, number>();
 
+    // Link flows also establish upstream direction for bracketing even when
+    // no field meter was placed on that particular link.
+    for (const link of result.link_results) {
+      if (typeof link.flow_rate === "number" && Number.isFinite(link.flow_rate)) expected.set(link.id, link.flow_rate);
+    }
+
     for (const m of measurements) {
       if (m.type === "PRESSURE_HEAD") {
-        expected.set(m.element_id, nodeById.get(m.element_id)?.pressure_head ?? 0);
+        const resultNode = nodeById.get(m.element_id);
+        const inputNode = inputNodeById.get(m.element_id);
+        const value = resultNode?.pressure_head ?? (typeof resultNode?.hydraulic_head === "number" && inputNode?.type === "TANK"
+          ? resultNode.hydraulic_head - Number(inputNode.input_params?.elevation)
+          : undefined);
+        if (typeof value !== "number" || !Number.isFinite(value)) {
+          throw new ApiError(422, "E200", `No simulated pressure head for '${m.element_id}'.`, m.element_id);
+        }
+        expected.set(m.element_id, value);
       } else {
-        expected.set(m.element_id, linkById.get(m.element_id)?.flow_rate ?? 0);
+        const value = linkById.get(m.element_id)?.flow_rate;
+        if (typeof value !== "number" || !Number.isFinite(value)) {
+          throw new ApiError(422, "E200", `No simulated flow rate for '${m.element_id}'.`, m.element_id);
+        }
+        expected.set(m.element_id, value);
       }
     }
 
@@ -123,9 +126,7 @@
         throw new ApiError(422, "E200", "measurements array is required and must not be empty.", undefined, "measurements");
       }
 
-      let nodes: NodePayload[];
-      let links: LinkPayload[];
-      let thresholds = body.thresholds;
+      let payload: SchematicPayload;
 
       if (body.schematic_id) {
         const document = await schematicsRepository.get(
@@ -139,37 +140,28 @@
             `Schematic '${body.schematic_id}' does not exist or you do not have permission to access it.`,
           );
         }
-        nodes = document.nodes;
-        links = document.links;
-        thresholds ??= document.thresholds;
+        payload = normalizeSchematicPayload({
+          name: document.name, nodes: document.nodes, links: document.links,
+          measurements: [], thresholds: body.thresholds ?? document.thresholds,
+          filter_multipliers: body.filter_multipliers ?? document.filter_multipliers,
+        });
       } else {
-        const payload = normalizeAnomalyPayload(body);
-        nodes = payload.nodes ?? [];
-        links = payload.links ?? [];
-        thresholds ??= payload.thresholds;
+        payload = normalizeAnomalyPayload(body);
       }
 
+      const nodes = payload.nodes ?? [];
+      const links = payload.links ?? [];
       validateMeasurements(body.measurements, nodes, links);
-
-      let expected = extractExpectedValues(body.measurements, nodes, links);
-      if (!expected) {
-        const payload: SchematicPayload = {
-          name: "Inline simulation",
-          nodes,
-          links,
-          thresholds,
-          measurements: [],
-        };
-        const simResult = runSimulation(payload);
-        expected = expectedValuesFromSimulation(body.measurements, simResult);
-      }
+      // Always solve current inputs. Persisted computed values may describe an
+      // earlier version of the diagram and cannot be an anomaly baseline.
+      const expected = expectedValuesFromSimulation(body.measurements, runSimulation(payload), nodes);
 
       const result = detectAnomalies(
         body.measurements,
         expected,
         nodes,
         links,
-        buildThresholds(thresholds),
+        buildThresholds(payload.thresholds),
       );
 
       response.json(result);
