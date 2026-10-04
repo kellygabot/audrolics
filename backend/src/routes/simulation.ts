@@ -26,6 +26,7 @@ const normalizeSimulationPayload = (body: SimulationPayload): SchematicPayload =
     links: body.links ?? [],
     measurements: body.measurements ?? [],
     thresholds: body.thresholds,
+    filter_multipliers: body.filter_multipliers,
   };
   return normalizeSchematicPayload(raw);
 };
@@ -48,7 +49,7 @@ simulationRouter.post("/", async (request, response, next) => {
         );
       }
       schematicId = document.id;
-      payload = {
+      payload = normalizeSchematicPayload({
         name: document.name,
         nodes: document.nodes,
         links: document.links,
@@ -58,7 +59,7 @@ simulationRouter.post("/", async (request, response, next) => {
         filter_multipliers: document.filter_multipliers,
         styling: document.styling,
         visibility: document.visibility,
-      };
+      });
     } else {
       payload = normalizeSimulationPayload(body);
     }
@@ -85,7 +86,7 @@ simulationRouter.post("/", async (request, response, next) => {
       user_id: userId,
       schematic_id: schematicId,
       network_size: networkSize,
-      status: "FAILED",
+      status: error instanceof ApiError && error.errorCode === "E104" ? "NON_CONVERGENCE" : "FAILED",
     }).catch(() => {
       // Audit failures must not hide the original simulation error.
     });

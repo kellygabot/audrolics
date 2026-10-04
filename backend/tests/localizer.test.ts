@@ -120,10 +120,10 @@ describe("localizer helpers", () => {
       expect(classifySignature(-1, -2, ["p2"], flagged)).toBe("LEAK");
     });
 
-    it("classifies BLOCKAGE for forward and reverse pressure sign pairs with negative/missing flow residual", () => {
+    it("classifies BLOCKAGE only when upstream pressure rises and downstream falls", () => {
       const flagged = new Map<string, FlaggedPoint>();
       expect(classifySignature(2, -2, ["p1"], flagged)).toBe("BLOCKAGE");
-      expect(classifySignature(-2, 2, ["p1"], flagged)).toBe("BLOCKAGE");
+      expect(classifySignature(-2, 2, ["p1"], flagged)).toBe("UNKNOWN");
     });
 
     it("classifies UNKNOWN for positive flow residual or non-matching pressure sign combinations", () => {

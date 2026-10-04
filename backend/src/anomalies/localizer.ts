@@ -106,16 +106,12 @@ export type Signature = "LEAK" | "BLOCKAGE" | "UNKNOWN";
  *   a FLOW_RATE flagged point; record its residual, else null.
  * - bothPressureNegative = residualA < 0 && residualB < 0
  * - blockageForward = residualA > 0 && residualB < 0
- * - blockageReverse = residualA < 0 && residualB > 0
  * - If bothPressureNegative AND (flowResidual === null OR flowResidual < 0) → "LEAK"
- * - If (blockageForward OR blockageReverse) AND (flowResidual === null OR flowResidual < 0) → "BLOCKAGE"
+ * - If blockageForward AND (flowResidual === null OR flowResidual < 0) → "BLOCKAGE"
  * - Otherwise → "UNKNOWN"
  *
- * NOTE: blockageReverse (upstream low, downstream high) is treated symmetrically
- * to blockageForward here. The SRS §7.2 only describes upstream-high/downstream-low
- * for blockage. This symmetric handling is preserved from detector.ts to maintain
- * exact behavioral compatibility. Domain reviewer should confirm if SRS asymmetry
- * was intentional or if reverse case should be UNKNOWN.
+ * The caller must pass upstream pressure first; the reverse pattern is not a
+ * blockage signature under the SRS.
  *
  * @param residualA - Pressure residual at first endpoint (assumed upstream by caller)
  * @param residualB - Pressure residual at second endpoint (assumed downstream by caller)
@@ -134,19 +130,18 @@ export const classifySignature = (
   for (const linkId of pathLinkIds) {
     const flagged = flaggedByElementId.get(linkId);
     if (flagged && flagged.type === "FLOW_RATE") {
-      flowResidual = flagged.residual;
+      flowResidual = flagged.residual * (flagged.expected < 0 ? -1 : 1);
       break;
     }
   }
 
   const bothPressureNegative = residualA < 0 && residualB < 0;
   const blockageForward = residualA > 0 && residualB < 0;
-  const blockageReverse = residualA < 0 && residualB > 0;
 
   if (bothPressureNegative) {
     if (flowResidual === null || flowResidual < 0) return "LEAK";
   }
-  if (blockageForward || blockageReverse) {
+  if (blockageForward) {
     if (flowResidual === null || flowResidual < 0) return "BLOCKAGE";
   }
   return "UNKNOWN";

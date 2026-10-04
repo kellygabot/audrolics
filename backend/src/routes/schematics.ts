@@ -2,7 +2,7 @@ import mongoose from "mongoose";
 import { Router } from "express";
 
 import { SchematicRepository } from "../repositories/schematics.js";
-import { normalizeSchematicPayload, ValidationError } from "../schemas/schematic.js";
+import { normalizeDraftSchematicPayload, ValidationError } from "../schemas/schematic.js";
 import { ApiError } from "../utils/errors.js";
 
 export const schematicsRouter = Router();
@@ -54,7 +54,7 @@ schematicsRouter.get("/", async (request, response, next) => {
 schematicsRouter.post("/", async (request, response, next) => {
   try {
     const userId = requireUserId(request.header("X-User-Id"));
-    const payload = normalizeSchematicPayload(request.body);
+    const payload = normalizeDraftSchematicPayload(request.body);
     response.status(201).json(await repository.create(userId, payload));
   } catch (error) {
     if (error instanceof ValidationError) next(new ApiError(422, "E200", error.message));
@@ -76,7 +76,7 @@ schematicsRouter.get("/:schematicId", async (request, response, next) => {
 schematicsRouter.put("/:schematicId", async (request, response, next) => {
   try {
     const userId = requireUserId(request.header("X-User-Id"));
-    const payload = normalizeSchematicPayload(request.body);
+    const payload = normalizeDraftSchematicPayload(request.body);
     const document = await repository.update(userId, request.params.schematicId, payload);
     if (!document) raiseNotFound(request.params.schematicId);
     response.json(document);

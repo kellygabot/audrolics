@@ -6,13 +6,13 @@
 }
 
 .builder-header {
-  height: 72px;
-  min-height: 72px;
-  gap: 22px;
+  height: 60px;
+  min-height: 60px;
+  gap: 12px;
   overflow-x: auto;
   overflow-y: hidden;
   border-color: #c9c9c9;
-  padding: 0 32px;
+  padding: 0 14px;
   box-shadow: none;
   scrollbar-width: thin;
 }
@@ -42,10 +42,10 @@
   flex-shrink: 0;
 }
 
-.builder-header > div:first-child p {
-  padding-left: 4px;
-  color: #85858b;
-  font-size: 10px;
+.builder-file-name {
+  display: flex;
+  min-height: 30px;
+  align-items: center;
 }
 
 .builder-toolbar-button {
@@ -191,14 +191,14 @@
 }
 
 .builder-palette-symbol {
-  width: 61px;
-  height: 61px;
+  width: 48px;
+  height: 48px;
   border: 1px solid #bdbdc1;
   border-radius: 6px;
   background-color: #fff;
   background-position: center;
   background-repeat: no-repeat;
-  background-size: 42px 42px;
+  background-size: 34px 34px;
   color: transparent;
   font-size: 0;
 }
@@ -276,10 +276,10 @@
 }
 
 .builder-canvas > div:first-child {
-  height: 62px;
+  height: 48px;
   border-color: #c8c8c8;
   background: #fff;
-  padding: 0 22px;
+  padding: 0 14px;
 }
 
 .builder-canvas > div:first-child > div:first-child {
@@ -305,7 +305,7 @@
 }
 
 .builder-inspector > div:last-child {
-  padding: 28px 30px;
+  padding: 18px;
 }
 
 .builder-inspector .space-y-4 {
@@ -377,4 +377,180 @@
   .builder-canvas > div:first-child { gap: 12px; overflow-x: auto; }
   .builder-canvas > div:first-child > div:first-child { gap: 12px; }
   .builder-inspector > div:last-child { padding-inline: 18px; }
+}
+
+.builder-confirm-modal {
+  max-width: 480px;
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  border: 1px solid #c7c7c7;
+  border-radius: 20px;
+  padding: 32px 36px 34px;
+  color: #404044;
+  text-align: center;
+  box-shadow: 0 22px 55px #00000024;
+}
+
+.builder-confirm-art {
+  width: min(100%, 260px);
+  height: clamp(150px, 27dvh, 235px);
+  margin: 0 auto 14px;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+}
+
+.builder-confirm-art--save { background-image: url("/save_modal.svg"); }
+.builder-confirm-art--delete { background-image: url("/delete_modal.svg"); }
+
+.builder-confirm-modal h2 {
+  color: #414141;
+  font-size: clamp(24px, 3vw, 30px);
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.builder-confirm-modal h2 + div {
+  margin-top: 20px;
+  color: #55555b;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.builder-confirm-modal h2 + div p { margin: 0; }
+
+.builder-confirm-modal > div:last-child {
+  justify-content: center;
+  gap: 18px;
+  margin-top: 32px;
+}
+
+.builder-confirm-button {
+  min-width: 140px;
+  min-height: 48px;
+  border-radius: 999px;
+  padding: 8px 20px;
+  color: #fff;
+  font-size: 18px;
+  font-weight: 700;
+  transition: background-color 180ms ease-out, box-shadow 180ms ease-out;
+}
+
+.builder-confirm-button--cancel { background: #050505; }
+.builder-confirm-button--cancel:hover { background: #333; }
+.builder-confirm-button--save { background: #1029f5; }
+.builder-confirm-button--save:hover { background: #071ac6; }
+.builder-confirm-button--delete { background: #d00000; }
+.builder-confirm-button--delete:hover { background: #a90000; }
+.builder-confirm-button:focus-visible,
+.builder-confirm-discard:focus-visible {
+  outline: 3px solid #1029f5;
+  outline-offset: 3px;
+}
+
+.builder-confirm-discard {
+  margin-top: 12px;
+  color: #55555b;
+  font-size: 12px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.builder-feedback-modal {
+  max-width: 480px;
+}
+
+.builder-feedback-content {
+  display: grid;
+  gap: 16px;
+}
+
+.builder-feedback-content h3 {
+  margin-bottom: 8px;
+  color: #414141;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.builder-feedback-list {
+  display: grid;
+  gap: 8px;
+  max-height: min(40dvh, 280px);
+  overflow-y: auto;
+  text-align: left;
+}
+
+.builder-feedback-list button {
+  width: 100%;
+  border: 1px solid #d3d3d6;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #f8f9fd;
+  color: #414141;
+  text-align: left;
+}
+
+.builder-feedback-list button:hover,
+.builder-feedback-list button:focus-visible {
+  border-color: #1029f5;
+  outline: none;
+}
+
+.builder-feedback-list button span { color: #a90000; }
+.builder-feedback-messages { display: grid; gap: 8px; color: #55555b; }
+.builder-confirm-modal .builder-delete-warning { margin-top: 12px; color: #9a5400; font-weight: 600; }
+
+@media (max-width: 1100px) {
+  .builder-header {
+    height: auto;
+    min-height: 60px;
+    flex-wrap: wrap;
+    overflow: visible;
+    padding-block: 8px;
+  }
+  .builder-header > div:nth-child(2) {
+    order: 3;
+    width: 100%;
+    overflow-x: auto;
+    padding-bottom: 3px;
+  }
+  .builder-header > div:last-child {
+    margin-left: auto;
+    overflow-x: auto;
+  }
+  .builder-panel-heading { min-height: 64px; padding: 11px 14px; }
+  .builder-panel-heading h2 { font-size: 16px; }
+  .builder-palette > div:last-child { padding: 14px; }
+  .builder-palette-group { margin-bottom: 16px; }
+  .builder-visibility { padding: 12px; }
+  .builder-inspector > div:last-child { padding: 12px; }
+  .builder-element-identity { padding: 14px; }
+  .builder-input-parameters > div:first-child,
+  .builder-field-measurement > div:first-child,
+  .builder-computed-results > div:first-child { padding: 10px 14px; }
+  .builder-input-parameters > div:last-child,
+  .builder-field-measurement > div:last-child,
+  .builder-computed-results > div:last-child { padding: 14px; }
+}
+
+@media (max-width: 760px) {
+  .builder-page { height: auto; min-height: 100dvh; overflow: visible; }
+  .builder-header > div:first-child { width: 100%; }
+  .builder-header > div:nth-child(2) { order: 2; }
+  .builder-header > div:last-child { order: 3; width: 100%; margin-left: 0; }
+  .builder-workspace { display: flex; flex-direction: column; }
+  .builder-palette { max-height: 240px; overflow-y: auto; border-right: 0; border-bottom: 1px solid #c8c8c8; }
+  .builder-palette > div:nth-child(2) { overflow: visible; flex: none; }
+  .builder-canvas { height: max(380px, 55dvh); flex: none; }
+  .builder-canvas > div:first-child { overflow-x: auto; }
+  .builder-canvas > div:first-child > div { flex-shrink: 0; }
+  .builder-inspector { min-height: 320px; border-left: 0; border-top: 1px solid #c8c8c8; }
+  .builder-inspector > button:first-child { display: none; }
+  .builder-confirm-modal { padding: 20px 18px 24px; border-radius: 16px; }
+  .builder-confirm-modal > div:last-child { gap: 10px; margin-top: 22px; }
+  .builder-confirm-button { min-width: 0; flex: 1; font-size: 16px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .builder-confirm-button { transition: none; }
 }

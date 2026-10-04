@@ -219,10 +219,10 @@ function SchematicsPage() {
                   key={item.id}
                   className="group overflow-hidden rounded-2xl border border-[#999] bg-white transition hover:border-[#112de5] hover:shadow-[0_18px_35px_rgba(30,35,60,0.12)] focus-within:border-[#112de5]"
                 >
-                  <button type="button" onClick={() => router.push(`/builder?id=${encodeURIComponent(item.id)}`)} className="block h-[clamp(180px,15vw,280px)] w-full border-b border-[#aaa] bg-white focus-visible:outline-4 focus-visible:outline-[#112de5]" aria-label={`Open ${item.name}`} />
+                  <button type="button" onClick={() => router.push(`/builder?id=${encodeURIComponent(item.id)}`)} className="block h-[clamp(180px,15vw,280px)] w-full border-b border-[#aaa] bg-white focus-visible:outline-4 focus-visible:outline-[#112de5]" aria-label={`Open ${item.name.trim() || "Untitled schematic"}`} />
                   <div className="flex min-h-25 items-end justify-between gap-3 px-5 py-4">
                     <div className="min-w-0">
-                      <h3 className="truncate text-[clamp(17px,1.3vw,24px)] font-normal text-[#555]">{item.name}</h3>
+                      <h3 className="truncate text-[clamp(17px,1.3vw,24px)] font-normal text-[#555]">{item.name.trim() || "Untitled schematic"}</h3>
                       <p className="mt-1 flex items-center gap-2 truncate text-[clamp(13px,1vw,18px)] text-[#999]">
                         <Image src="/logo.svg" alt="" width={20} height={20} className="h-5 w-5 shrink-0" />
                         Updated {formatDate(item.updated_at)}
@@ -231,8 +231,8 @@ function SchematicsPage() {
                     <button
                       type="button"
                       onClick={() => setPendingDelete(item)}
-                      aria-label={`Delete ${item.name}`}
-                      title={`Delete ${item.name}`}
+                      aria-label={`Delete ${item.name.trim() || "Untitled schematic"}`}
+                      title={`Delete ${item.name.trim() || "Untitled schematic"}`}
                       className="shrink-0 rounded-full px-2 py-1 text-2xl leading-none text-[#aaa] transition hover:bg-red-50 hover:text-red-700 focus-visible:outline-2 focus-visible:outline-[#112de5]"
                     >
                       ⋮
@@ -289,7 +289,7 @@ function SchematicsPage() {
       >
         <p>
           This will permanently delete{" "}
-          <strong>{pendingDelete?.name}</strong> from the Express/MongoDB
+          <strong>{pendingDelete?.name.trim() || "Untitled schematic"}</strong> from the Express/MongoDB
           backend. This action cannot be undone.
         </p>
       </Modal>

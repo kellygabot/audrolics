@@ -86,6 +86,7 @@ export type SuspectSegment = {
   signature: "LEAK" | "BLOCKAGE" | "UNKNOWN";
   pipe_ids?: string[];
   path?: string[];
+  consistency?: number;
 };
 
 export type AnomalyApiResponse = {
