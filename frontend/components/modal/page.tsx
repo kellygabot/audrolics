@@ -13,6 +13,8 @@ interface ModalProps {
   onClose: () => void;
   children: ReactNode;
   actions?: ReactNode;
+  illustration?: ReactNode;
+  className?: string;
   initialFocusRef?: React.RefObject<HTMLElement | null>;
 }
 
@@ -22,6 +24,8 @@ export default function Modal({
   onClose,
   children,
   actions,
+  illustration,
+  className,
   initialFocusRef,
 }: ModalProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -82,7 +86,7 @@ export default function Modal({
 
   return (
     <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/30 p-6"
+      className="fixed inset-0 z-40 flex items-center justify-center overflow-y-auto bg-slate-950/30 p-4"
       onClick={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
@@ -93,8 +97,9 @@ export default function Modal({
         aria-modal="true"
         aria-labelledby="modal-title"
         tabIndex={-1}
-        className="w-full max-w-md rounded border border-slate-300 bg-white p-5 shadow-lg outline-none"
+        className={`w-full max-w-md rounded border border-slate-300 bg-white p-5 shadow-lg outline-none ${className ?? ""}`}
       >
+        {illustration}
         <h2 id="modal-title" className="text-base font-semibold text-slate-950">
           {title}
         </h2>

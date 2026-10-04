@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import BuilderPage from '@/app/builder/page'
 
@@ -47,8 +47,20 @@ describe('BuilderPage', () => {
         ).toBeInTheDocument()
 
         expect(screen.getByRole('button', { name: /save/i })).toBeInTheDocument()
+        expect(screen.getByText('Ready to build')).toHaveClass('sr-only')
         expect(screen.getByLabelText(/line color/i)).toBeInTheDocument()
         expect(screen.getByText(/strainer settings/i)).toBeInTheDocument()
+    })
+
+    it('does not open the save modal when nothing has changed', () => {
+        const fetchMock = vi.fn().mockResolvedValue(jsonResponse([]))
+        vi.stubGlobal('fetch', fetchMock)
+        render(<BuilderPage />)
+
+        fireEvent.click(screen.getByRole('button', { name: /^save$/i }))
+
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+        expect(fetchMock).not.toHaveBeenCalledWith('/api/v1/schematics', expect.anything())
     })
 
     it('creates pipes with hydraulic defaults', () => {
@@ -189,12 +201,26 @@ describe('BuilderPage', () => {
         render(<BuilderPage />)
         fireEvent.change(screen.getByRole('textbox', { name: /schematic name/i }), { target: { value: '' } })
         fireEvent.click(screen.getByRole('button', { name: /^save$/i }))
+        expect(screen.getByRole('dialog', { name: /save changes/i })).toBeInTheDocument()
+        expect(fetchMock).not.toHaveBeenCalledWith('/api/v1/schematics', expect.anything())
+        fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /^save$/i }))
         await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/v1/schematics', expect.objectContaining({ method: 'POST' })))
         const saveCall = fetchMock.mock.calls.find(([url, init]) => url === '/api/v1/schematics' && init?.method === 'POST')!
         expect(JSON.parse(String(saveCall[1].body))).toMatchObject({ name: '', nodes: [], links: [] })
         await waitFor(() => expect(screen.queryByLabelText(/unsaved changes/i)).not.toBeInTheDocument())
+        await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+        fireEvent.click(screen.getByRole('button', { name: /^save$/i }))
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+        expect(fetchMock.mock.calls.filter(([url, init]) => url === '/api/v1/schematics' && init?.method === 'POST')).toHaveLength(1)
         fireEvent.click(screen.getByRole('button', { name: /^simulate$/i }))
         expect(await screen.findByText(/network has no reservoir or tank/i)).toBeInTheDocument()
+        const simulationDialog = screen.getByRole('dialog')
+        expect(simulationDialog).toHaveClass('builder-confirm-modal', 'builder-feedback-modal')
+        expect(within(simulationDialog).queryByRole('img')).not.toBeInTheDocument()
+        fireEvent.click(within(simulationDialog).getByRole('button', { name: /^close$/i }))
+        fireEvent.click(screen.getByRole('button', { name: /^detect anomalies$/i }))
+        expect(screen.getByRole('dialog')).toHaveClass('builder-confirm-modal', 'builder-feedback-modal')
+        expect(screen.getByText(/add at least one field measurement/i)).toBeInTheDocument()
         expect(fetchMock.mock.calls.some(([url]) => url === '/api/v1/simulate')).toBe(true)
     })
 
