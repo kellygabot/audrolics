@@ -1,3 +1,6 @@
+'use client';
+
+import { useState } from "react";
 import Image from "next/image";
 
 interface AuthModalProps {
@@ -11,12 +14,68 @@ export default function AuthModal({
   onClose,
   onSwitchMode,
 }: AuthModalProps) {
+  // Form State
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [fullName, setFullName] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  // Reset errors when switching between login and signup
+  const handleSwitchMode = (newMode: "login" | "signup") => {
+    setError(null);
+    onSwitchMode(newMode);
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setLoading(true);
+
+    // Uses relative paths mapped by next.config.ts rewrites
+    const endpoint = mode === "signup"
+      ? "/api/v1/auth/register"
+      : "/api/v1/auth/login";
+
+    const payload = mode === "signup"
+      ? { email, password, fullName }
+      : { email, password };
+
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.message || "An error occurred during authentication.");
+      }
+
+      // Save JWT token in localStorage
+      if (data.token) {
+        localStorage.setItem("token", data.token);
+      }
+
+      // Close modal on success
+      onClose();
+    } catch (err: any) {
+      setError(err.message || "Failed to connect to server.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 font-poppins">
       {/* Background Overlay */}
       <div className="absolute inset-0" onClick={onClose} />
 
-      {/* Main Container: Uses flex-row for Login, flex-row-reverse for Signup to swap sides */}
+      {/* Main Container */}
       <div 
         className={`relative z-10 w-212.5 min-h-137.5  bg-white rounded-[3rem] shadow-2xl overflow-hidden flex ${
           mode === "login" ? "flex-row" : "flex-row-reverse"
@@ -27,6 +86,12 @@ export default function AuthModal({
         {/* ======================= */}
         <div className="w-1/2 p-12 flex flex-col justify-center bg-white">
           
+          {error && (
+            <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-600 rounded-xl text-xs font-semibold">
+              {error}
+            </div>
+          )}
+
           {mode === "login" ? (
             /* --- LOGIN FORM --- */
             <>
@@ -44,7 +109,7 @@ export default function AuthModal({
                 Sign in to continue to your account.
               </p>
 
-              <form className="space-y-5" onSubmit={(e) => e.preventDefault()}>
+              <form className="space-y-5" onSubmit={handleSubmit}>
                 <div>
                   <label className="block text-[0.70rem] font-bold text-black mb-1.5">
                     Email address
@@ -53,6 +118,9 @@ export default function AuthModal({
                     <Image src="/email.svg" alt="Email Icon" width={16} height={16} className="absolute left-3 opacity-40" />
                     <input
                       type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      required
                       placeholder="you@company.com"
                       className="w-full pl-9 pr-4 py-2.5 rounded-[0.75rem] bg-[#f4f4f5] border border-gray-200 text-sm focus:outline-none focus:border-[#021eef] focus:bg-white focus:ring-1 focus:ring-[#021eef] transition-colors"
                     />
@@ -67,6 +135,9 @@ export default function AuthModal({
                     <Image src="/password.svg" alt="Lock Icon" width={12} height={12} className="absolute left-3.5 opacity-40" />
                     <input
                       type="password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      required
                       placeholder="Enter your password"
                       className="w-full pl-9 pr-4 py-2.5 rounded-[0.75rem] bg-[#f4f4f5] border border-gray-200 text-sm focus:outline-none focus:border-[#021eef] focus:bg-white focus:ring-1 focus:ring-[#021eef] transition-colors"
                     />
@@ -75,9 +146,10 @@ export default function AuthModal({
 
                 <button
                   type="submit"
-                  className="w-full mt-4 bg-[#021eef] text-white py-3 rounded-[0.75rem] font-bold text-[0.85rem] shadow-lg hover:bg-[#0015ba] transition-colors"
+                  disabled={loading}
+                  className="w-full mt-4 bg-[#021eef] text-white py-3 rounded-[0.75rem] font-bold text-[0.85rem] shadow-lg hover:bg-[#0015ba] transition-colors disabled:opacity-50"
                 >
-                  Log in
+                  {loading ? "Signing in..." : "Log in"}
                 </button>
               </form>
             </>
@@ -91,7 +163,7 @@ export default function AuthModal({
                 Create your account
               </h2>
 
-              <form className="space-y-4" onSubmit={(e) => e.preventDefault()}>
+              <form className="space-y-4" onSubmit={handleSubmit}>
                 <div>
                   <label className="block text-[0.70rem] font-bold text-black mb-1.5">
                     Full Name
@@ -100,6 +172,8 @@ export default function AuthModal({
                     <Image src="/user.svg" alt="User Icon" width={16} height={16} className="absolute left-3 opacity-40" />
                     <input
                       type="text"
+                      value={fullName}
+                      onChange={(e) => setFullName(e.target.value)}
                       placeholder="Juan Dela Cruz"
                       className="w-full pl-9 pr-4 py-2.5 rounded-[0.75rem] bg-[#f4f4f5] border border-gray-200 text-sm focus:outline-none focus:border-[#021eef] focus:bg-white focus:ring-1 focus:ring-[#021eef] transition-colors"
                     />
@@ -114,6 +188,9 @@ export default function AuthModal({
                     <Image src="/email.svg" alt="Email Icon" width={16} height={16} className="absolute left-3 opacity-40" />
                     <input
                       type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      required
                       placeholder="you@company.com"
                       className="w-full pl-9 pr-4 py-2.5 rounded-[0.75rem] bg-[#f4f4f5] border border-gray-200 text-sm focus:outline-none focus:border-[#021eef] focus:bg-white focus:ring-1 focus:ring-[#021eef] transition-colors"
                     />
@@ -128,17 +205,21 @@ export default function AuthModal({
                     <Image src="/password.svg" alt="Lock Icon" width={12} height={12} className="absolute left-3.5 opacity-40" />
                     <input
                       type="password"
-                      placeholder="At least 8 characters"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      required
+                      minLength={6}
+                      placeholder="At least 6 characters"
                       className="w-full pl-9 pr-4 py-2.5 rounded-[0.75rem] bg-[#f4f4f5] border border-gray-200 text-sm focus:outline-none focus:border-[#021eef] focus:bg-white focus:ring-1 focus:ring-[#021eef] transition-colors"
                     />
                   </div>
                   <p className="text-[0.60rem] text-[#8a8a8a] mt-1.5 ml-1">
-                    Use 8+ characters with a number or symbol.
+                    Use 6+ characters.
                   </p>
                 </div>
 
                 <div className="flex items-center gap-2 pt-2 pb-2">
-                  <input type="checkbox" className="w-3.5 h-3.5 rounded border-gray-300 text-[#021eef] focus:ring-[#021eef]" />
+                  <input type="checkbox" required className="w-3.5 h-3.5 rounded border-gray-300 text-[#021eef] focus:ring-[#021eef]" />
                   <span className="text-[0.65rem] text-gray-500">
                     I agree to the <span className="font-bold text-black">Terms and Privacy Policy</span>.
                   </span>
@@ -146,9 +227,10 @@ export default function AuthModal({
 
                 <button
                   type="submit"
-                  className="w-full bg-[#021eef] text-white py-3 rounded-[0.75rem] font-bold text-[0.85rem] shadow-lg hover:bg-[#0015ba] transition-colors"
+                  disabled={loading}
+                  className="w-full bg-[#021eef] text-white py-3 rounded-[0.75rem] font-bold text-[0.85rem] shadow-lg hover:bg-[#0015ba] transition-colors disabled:opacity-50"
                 >
-                  Create account
+                  {loading ? "Creating account..." : "Create account"}
                 </button>
               </form>
             </>
@@ -175,7 +257,8 @@ export default function AuthModal({
               </p>
 
               <button
-                onClick={() => onSwitchMode("signup")}
+                type="button"
+                onClick={() => handleSwitchMode("signup")}
                 className="px-6 py-2.5 rounded-lg border border-white/40 bg-white/10 hover:bg-white/20 backdrop-blur-md text-[0.80rem] font-bold transition-all flex items-center gap-2 shadow-sm"
               >
                 Create account <Image src="/arrow.svg" alt="Arrow Right" width={12} height={12} />
@@ -196,8 +279,9 @@ export default function AuthModal({
               </p>
 
               <button
-                onClick={() => onSwitchMode("login")}
-                className="px-6 py-2.5 rounded-lg border border-white/40 bg-white/10 hover:bg-white/10 backdrop-blur-md text-[0.80rem] font-bold transition-all flex items-center gap-2 shadow-[0_0_15px_rgba(255,255,255,0.3) inset_0_0_10px_rgba(255,255,255,0.1)"
+                type="button"
+                onClick={() => handleSwitchMode("login")}
+                className="px-6 py-2.5 rounded-lg border border-white/40 bg-white/10 hover:bg-white/20 backdrop-blur-md text-[0.80rem] font-bold transition-all flex items-center gap-2 shadow-sm"
               >
                 <Image src="/arrow.svg" alt="Arrow Left" width={12} height={12} className="rotate-180"/> Back to sign in
               </button>

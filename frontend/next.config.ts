@@ -12,9 +12,6 @@ const nextConfig: NextConfig = {
     if (!apiBaseUrl) return [];
     return [
       {
-        // Backend boundary:
-        // The builder always calls same-origin /api/* paths. Point
-        // BACKEND_API_BASE_URL at the Express/Mongoose backend.
         source: "/api/:path*",
         destination: `${apiBaseUrl.replace(/\/$/, "")}/api/:path*`,
       },
