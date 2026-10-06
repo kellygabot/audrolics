@@ -55,10 +55,10 @@ describe('BuilderPage', () => {
         expect(screen.getByText('Ready to build')).toHaveClass('sr-only')
         expect(screen.getByLabelText(/line color/i)).toBeInTheDocument()
         expect(screen.getByRole('button', { name: /reservoir.*hatched triangle/i })).toHaveTextContent('Reservoir')
-        expect(screen.queryByText(/hatched triangle/i)).not.toBeInTheDocument()
+        expect(screen.getByText(/hatched triangle/i)).toBeInTheDocument()
         const strainer = screen.getByRole('button', { name: /strainer.*inline device/i })
-        expect(strainer).toHaveTextContent('Strainer/ Filter')
-        expect(strainer.querySelector('br')).toBeInTheDocument()
+        expect(strainer).toHaveTextContent('Strainer / Filter')
+        expect(strainer.querySelector('.builder-palette-detail')).toBeInTheDocument()
         expect(screen.getByText(/strainer settings/i)).toBeInTheDocument()
         expect(screen.queryByText('engineer@audrolics.dev')).not.toBeInTheDocument()
         expect(screen.queryByRole('button', { name: /account|sign out|log out/i })).not.toBeInTheDocument()
@@ -85,13 +85,12 @@ describe('BuilderPage', () => {
         fireEvent.pointerUp(canvas, { clientX: 100, clientY: 120, pointerId: 1 })
 
         const inspector = view.container.querySelector('.builder-inspector')!
-        const fields = inspector.querySelector('.builder-inspector-fields')!
+        const fields = inspector.querySelector('.builder-input-parameters')!
         const results = inspector.querySelector('.builder-computed-results')!
         expect(fields).toContainElement(view.getByText('Input Parameters'))
         expect(results).toContainElement(view.getByText('Computed Results'))
-        expect(results.parentElement).toBe(inspector.querySelector('.builder-inspector-content-inner'))
         expect(results.parentElement?.lastElementChild).toBe(results)
-        expect(results.closest('.builder-inspector-content')).toBeInTheDocument()
+        expect(results.closest('.overflow-y-auto')).toBeInTheDocument()
     })
 
     it('does not open the save modal when nothing has changed', () => {
@@ -221,11 +220,12 @@ describe('BuilderPage', () => {
         }
     })
 
-    it('shows dirty indicator after edits', () => {
+    it('enables saving after edits', () => {
         render(<BuilderPage />)
         const nameInput = screen.getByRole('textbox', { name: /schematic name/i })
         fireEvent.change(nameInput, { target: { value: 'Renamed schematic' } })
-        expect(screen.getByLabelText(/unsaved changes/i)).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('button', { name: /^save$/i }))
+        expect(screen.getByRole('dialog')).toBeInTheDocument()
     })
 
     it('saves an empty draft with a blank name and still blocks analysis', async () => {

@@ -36,6 +36,16 @@ The builder should support:
 
 ## Development
 
+### Code map
+
+- `app/builder/page.tsx` connects editing, canvas gestures, analysis, and save flows.
+- `app/builder/builder-model.ts` defines the saved schematic shape and defaults; `builder-graph.ts` owns pure graph, field, and validation rules.
+- `app/builder/builder-canvas.tsx` renders SVG elements; `builder-palette.tsx`, `builder-controls.tsx`, and `builder-inspector.tsx` render the surrounding tools and properties.
+- `app/builder/use-builder-history.ts` owns undo and redo snapshots; `use-builder-recovery.ts` manages dirty state and browser backups, while `builder-recovery.ts` reads account-scoped drafts. `lib/builder-storage.ts` owns schematic and analysis API requests.
+- `app/admin`, `app/schematics`, and `components/auth` own their page-specific flows; `lib/session.tsx` owns shared session refresh and authenticated requests.
+
+The `tests/app` files cover builder editing and persistence alongside admin, auth, schematics, and session behavior.
+
 Run the development server:
 
 ```bash

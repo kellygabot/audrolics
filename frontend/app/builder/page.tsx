@@ -1,9 +1,8 @@
 
 "use client";
 
-// The builder keeps the editable graph, viewport, and inspector in one page.
-// The helpers below handle validation and persistence; SVG components near the
-// bottom of this file render the graph without owning its state.
+// The page connects document state, canvas gestures, persistence, and the
+// surrounding builder components.
 import {
   type KeyboardEvent,
   type MouseEvent as ReactMouseEvent,
@@ -16,24 +15,31 @@ import {
   useState,
 } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import NextImage from "next/image";
-import { createPortal } from "react-dom";
 import "./builder.css";
 import { currentAccountId } from "@/lib/session";
-
 import BuilderModals, { type BuilderErrorItem } from "./builder-modals";
-
 import {
-  fitToView,
-  validateFieldValue,
-  validateTankLevels,
-} from "../../lib/builder-rules";
+  defaultModel, isNodeTool, isLinkTool, clamp, id,
+  MIN_ZOOM, MAX_ZOOM, ZOOM_STEP, SNAP_PX, HISTORY_LIMIT,
+  type SchematicModel, type BuilderNode, type BuilderLink, type Selection,
+  type ToolType, type LinkType, type NodeType, type Point, type DragState,
+  type PanState, type ContextMenuState, type NavigationGuardState,
+  type FieldValue, type Measurement,
+} from "./builder-model";
 import {
-  fitInlineSymbolScale,
-  linkEndpoints,
-  nodeBoundaryPoint,
-} from "../../lib/builder-canvas-geometry";
-
+  defaultNodeParams, defaultLinkParams, defaultNodeComputed,
+  defaultLinkComputed, nextLabel, validateModel, toApiPayload,
+  toAnalysisPayload, fromApiPayload, updateLinkPointsForNodes,
+  toggleSelection, normalizeBox, distance, csvCell,
+} from "./builder-graph";
+import { NodeShape, LinkShape, AnomalyOverlays, PendingLink } from "./builder-canvas";
+import { nodeTools, linkTools, PaletteGroup } from "./builder-palette";
+import { ElementForm, EmptyProperties } from "./builder-inspector";
+import { BuilderToolbar, ToolbarButton, PanelHeader } from "./builder-controls";
+import { useBuilderHistory } from "./use-builder-history";
+import { useBuilderRecovery } from "./use-builder-recovery";
+import { readRecoveryModel, recoveryKey } from "./builder-recovery";
+import { fitToView } from "../../lib/builder-rules";
 import {
   deleteSchematic as deleteStoredSchematic,
   loadSchematic as loadStoredSchematic,
@@ -46,242 +52,11 @@ import {
   type AnomalyApiResponse,
 } from "../../lib/builder-storage";
 
-// A schematic is a directed graph: nodes are endpoints and links join two nodes.
-// Design inputs and simulation outputs stay in separate fields so a simulation
-// cannot silently overwrite values entered by an engineer.
-type NodeType = "JUNCTION" | "RESERVOIR" | "TANK";
-type LinkType = "PIPE" | "PUMP" | "VALVE" | "FILTER";
-type ToolType = NodeType | LinkType;
-type Selection = { kind: "node"; id: string } | { kind: "link"; id: string };
-type FieldValue = string | number | CurvePoint[] | undefined;
-type InputParams = Record<string, FieldValue>;
-type ComputedValues = Record<string, number | null>;
-
-type BuilderNode = {
-  id: string;
-  label: string;
-  type: NodeType;
-  x: number;
-  y: number;
-  input_params: InputParams;
-  computed: ComputedValues;
-};
-
-type BuilderLink = {
-  id: string;
-  label: string;
-  type: LinkType;
-  from_node_id: string | null;
-  to_node_id: string | null;
-  points: { x: number; y: number }[];
-  input_params: InputParams;
-  computed: ComputedValues;
-};
-
-type CurvePoint = {
-  flow: string;
-  head?: string;
-  headloss?: string;
-};
-
-type Measurement = {
-  id: string;
-  element_id: string;
-  element_type: "NODE" | "LINK";
-  measurement_type: "PRESSURE_HEAD" | "FLOW_RATE";
-  value: number;
-  unit: string;
-};
-
-type SchematicModel = {
-  id?: string;
-  user_id?: string;
-  created_at?: string;
-  updated_at?: string;
-  name: string;
-  nodes: BuilderNode[];
-  links: BuilderLink[];
-  measurements: Measurement[];
-  canvas_state: { zoom: number; pan: { x: number; y: number } };
-  thresholds: {
-    threshold_pressure_pct: number;
-    threshold_pressure_abs: number;
-    threshold_flow_pct: number;
-    threshold_flow_abs: number;
-  };
-  filter_multipliers: {
-    clean: number;
-    partially_clogged: number;
-    clogged: number;
-  };
-  styling: { line_color: string; line_thickness: number; symbol_size: number };
-  visibility: {
-    length: boolean;
-    diameter: boolean;
-    pressure: boolean;
-    flow: boolean;
-    elevation: boolean;
-  };
-};
-
-// Undo/redo stores whole schematic snapshots because Feature 1 edits are small,
-// and this keeps graph operations such as copy/delete/connect easy to reverse.
-type HistoryState = {
-  past: SchematicModel[];
-  future: SchematicModel[];
-};
-
-type PanState = {
-  pointerId: number;
-  startX: number;
-  startY: number;
-  originX: number;
-  originY: number;
-};
-
-type DragState =
-  | {
-      kind: "node";
-      id: string;
-      pointerId: number;
-      offsetX: number;
-      offsetY: number;
-      moved: boolean;
-    }
-  | { kind: "select"; pointerId: number; start: Point; current: Point };
-
-type Point = { x: number; y: number };
-type ContextMenuState = { x: number; y: number; selection: Selection } | null;
-
-type NavigationGuardState =
-  | { kind: "new" }
-  | { kind: "load"; id: string }
-  | { kind: "navigate"; href: string }
-  | null;
-
-const MIN_ZOOM = 50;
-const MAX_ZOOM = 200;
-const ZOOM_STEP = 10;
-const SNAP_PX = 10;
-const HISTORY_LIMIT = 60;
-const recoveryKey = () => `audrolics.builder.recovery.${currentAccountId()}`;
-
-// Palette metadata drives the left panel. Its symbol artwork is applied by
-// builder.css, while these codes remain readable to assistive technology.
-const nodeTools: {
-  type: NodeType;
-  label: string;
-  code: string;
-  detail: string;
-}[] = [
-  { type: "JUNCTION", label: "Junction", code: "J", detail: "Small circle" },
-  {
-    type: "RESERVOIR",
-    label: "Reservoir",
-    code: "R",
-    detail: "Hatched triangle",
-  },
-  { type: "TANK", label: "Tank", code: "T", detail: "Rectangle / cylinder" },
-];
-
-const linkTools: {
-  type: LinkType;
-  label: string;
-  code: string;
-  detail: string;
-}[] = [
-  { type: "PIPE", label: "Pipe", code: "P", detail: "Connects two nodes" },
-  { type: "PUMP", label: "Pump", code: "PU", detail: "Inline device — place between Junctions" },
-  { type: "VALVE", label: "Valve", code: "V", detail: "Inline device — place between Junctions" },
-  {
-    type: "FILTER",
-    label: "Strainer / Filter",
-    code: "F",
-    detail: "Inline device — place between Junctions",
-  },
-];
-
-// Node artwork and canvas-only inline devices use their intrinsic aspect ratios.
-// The palette deliberately retains the original link graphics.
-const nodeSymbols: Record<NodeType, { src: string; width: number; height: number }> = {
-  JUNCTION: { src: "/junction.svg", width: 38, height: 39 },
-  RESERVOIR: { src: "/reservoir.svg", width: 44, height: 39 },
-  TANK: { src: "/tank.svg", width: 42, height: 27 },
-};
-
-const linkSymbols: Record<Exclude<LinkType, "PIPE">, {
-  src: string;
-  width: number;
-  height: number;
-  portSpan: number;
-  nativeAxis: "horizontal" | "vertical";
-  portAxisOffsetX?: number;
-}> = {
-  // The original pump and strainer connect vertically. Their clean artwork
-  // omits those short stubs, so the canvas line meets the top/bottom outlines.
-  PUMP: { src: "/pump_clean.svg", width: 58, height: 45, portSpan: 45, nativeAxis: "vertical", portAxisOffsetX: -7 },
-  VALVE: { src: "/valve_clean.svg", width: 56, height: 41, portSpan: 56, nativeAxis: "horizontal" },
-  FILTER: { src: "/strainer_clean.svg", width: 44, height: 44, portSpan: 44, nativeAxis: "vertical" },
-};
-
-// Keep defaults in one place so New, delete, recovery, and initial render all
-// begin with the same valid empty-document shape.
-const defaultModel = (): SchematicModel => ({
-  name: "Untitled schematic",
-  nodes: [],
-  links: [],
-  measurements: [],
-  canvas_state: { zoom: 100, pan: { x: 0, y: 0 } },
-  thresholds: {
-    threshold_pressure_pct: 5,
-    threshold_pressure_abs: 0.5,
-    threshold_flow_pct: 10,
-    threshold_flow_abs: 0.5,
-  },
-  filter_multipliers: { clean: 1, partially_clogged: 3, clogged: 10 },
-  styling: { line_color: "#000000", line_thickness: 2, symbol_size: 1 },
-  visibility: {
-    length: true,
-    diameter: true,
-    pressure: true,
-    flow: true,
-    elevation: true,
-  },
-});
-
-const readRecoveryModel = (): SchematicModel | null => {
-  if (typeof window === "undefined" || !window.localStorage) return null;
-  const raw = window.localStorage.getItem(recoveryKey());
-  if (!raw) return null;
-  try {
-    const recovered = JSON.parse(raw) as SchematicModel;
-    return recovered?.nodes && recovered?.links ? recovered : null;
-  } catch {
-    window.localStorage.removeItem(recoveryKey());
-    return null;
-  }
-};
-
-const isNodeTool = (tool: ToolType | null): tool is NodeType =>
-  tool === "JUNCTION" || tool === "RESERVOIR" || tool === "TANK";
-
-const isLinkTool = (tool: ToolType | null): tool is LinkType =>
-  tool === "PIPE" || tool === "PUMP" || tool === "VALVE" || tool === "FILTER";
-
-const clamp = (value: number, min: number, max: number) =>
-  Math.min(Math.max(value, min), max);
-const id = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
-
 function BuilderPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
   // Persistent document data and its undo history.
-  const [model, setModel] = useState(defaultModel);
-  const [history, setHistory] = useState<HistoryState>({
-    past: [],
-    future: [],
-  });
   const [selection, setSelection] = useState<Selection[]>([]);
   // Transient canvas modes: placement, connection, dragging, and panning.
   const [activeTool, setActiveTool] = useState<ToolType | null>(null);
@@ -296,32 +71,11 @@ function BuilderPage() {
   // Inspector validation and user-facing status do not belong in the saved graph.
   const [showAllErrors, setShowAllErrors] = useState(false);
   const [statusMessage, setStatusMessage] = useState("Ready to build");
-  const [rightPanelWidth, setRightPanelWidth] = useState(310);
+  const { model, setModel, history, setHistory, commit, undo, redo } = useBuilderHistory(setStatusMessage);
+  const { recoveryCandidate, setRecoveryCandidate, setLastSavedSnapshot, isDirty } = useBuilderRecovery(model);
+  const [rightPanelWidth, setRightPanelWidth] = useState(260);
   const [isResizingPanel, setIsResizingPanel] = useState(false);
-  const [strainerSettingsPosition, setStrainerSettingsPosition] = useState<{ left: number; top: number } | null>(null);
-  const strainerSettingsButtonRef = useRef<HTMLButtonElement | null>(null);
-  useEffect(() => {
-    if (!strainerSettingsPosition) return;
-    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setStrainerSettingsPosition(null);
-        strainerSettingsButtonRef.current?.focus();
-      }
-    };
-    const closeOnResize = () => setStrainerSettingsPosition(null);
-    window.addEventListener("keydown", closeOnEscape);
-    window.addEventListener("resize", closeOnResize);
-    return () => {
-      window.removeEventListener("keydown", closeOnEscape);
-      window.removeEventListener("resize", closeOnResize);
-    };
-  }, [strainerSettingsPosition]);
   // Recovery, navigation, and API operations are separate from graph editing.
-  const [recoveryCandidate, setRecoveryCandidate] =
-    useState<SchematicModel | null>(null);
-  const [lastSavedSnapshot, setLastSavedSnapshot] = useState(() =>
-    JSON.stringify(toApiPayload(defaultModel())),
-  );
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
   const [pendingSavedDelete, setPendingSavedDelete] = useState<string | null>(
     null,
@@ -356,12 +110,7 @@ function BuilderPage() {
     selection.length === 1 && selection[0].kind === "link"
       ? model.links.find((link) => link.id === selection[0].id)
       : undefined;
-  const selectedElement = selectedNode ?? selectedLink;
   const validation = useMemo(() => validateModel(model), [model]);
-  const isDirty = useMemo(
-    () => JSON.stringify(toApiPayload(model)) !== lastSavedSnapshot,
-    [model, lastSavedSnapshot],
-  );
   const zoomFactor = model.canvas_state.zoom / 100;
   const transform = `translate(${model.canvas_state.pan.x} ${model.canvas_state.pan.y}) scale(${zoomFactor})`;
   const isPanning = panState !== null;
@@ -380,7 +129,7 @@ function BuilderPage() {
         zoom: clamp(current.canvas_state.zoom + delta, MIN_ZOOM, MAX_ZOOM),
       },
     }));
-  }, []);
+  }, [setModel]);
 
   // Deep-link loading on mount
   useEffect(() => {
@@ -398,27 +147,9 @@ function BuilderPage() {
   }, []);
 
   useEffect(() => {
-    // Autosave-lite from the SRS: local recovery only, separate from explicit Mongo save.
-    const interval = window.setInterval(() => {
-      localStorage.setItem(recoveryKey(), JSON.stringify(model));
-    }, 30000);
-    return () => window.clearInterval(interval);
-  }, [model]);
-
-  useEffect(() => {
-    // Warn only after a diagram edit has created undo history.
-    const onBeforeUnload = (event: BeforeUnloadEvent) => {
-      if (!isDirty) return;
-      event.preventDefault();
-    };
-    window.addEventListener("beforeunload", onBeforeUnload);
-    return () => window.removeEventListener("beforeunload", onBeforeUnload);
-  }, [isDirty]);
-
-  useEffect(() => {
     if (!isResizingPanel) return;
     const onMove = (event: PointerEvent) => {
-      setRightPanelWidth(clamp(window.innerWidth - event.clientX, 280, 440));
+      setRightPanelWidth(clamp(window.innerWidth - event.clientX, 220, 400));
     };
     const onUp = () => setIsResizingPanel(false);
     window.addEventListener("pointermove", onMove);
@@ -439,47 +170,6 @@ function BuilderPage() {
     canvas.addEventListener("wheel", onWheel, { passive: false });
     return () => canvas.removeEventListener("wheel", onWheel);
   }, [nudgeZoom]);
-
-  function commit(
-    update: (draft: SchematicModel) => SchematicModel,
-    message?: string,
-  ) {
-    // Use this for diagram edits that should be undoable.
-    // Viewport and panel-only UI state intentionally bypass it.
-    setModel((current) => {
-      const next = update(structuredClone(current));
-      setHistory((state) => ({
-        past: [...state.past.slice(-(HISTORY_LIMIT - 1)), current],
-        future: [],
-      }));
-      return next;
-    });
-    if (message) setStatusMessage(message);
-  }
-
-  function undo() {
-    setHistory((state) => {
-      const previous = state.past.at(-1);
-      if (!previous) return state;
-      setModel(previous);
-      return {
-        past: state.past.slice(0, -1),
-        future: [model, ...state.future],
-      };
-    });
-  }
-
-  function redo() {
-    setHistory((state) => {
-      const next = state.future[0];
-      if (!next) return state;
-      setModel(next);
-      return {
-        past: [...state.past, model].slice(-HISTORY_LIMIT),
-        future: state.future.slice(1),
-      };
-    });
-  }
 
   function setViewport(partial: Partial<SchematicModel["canvas_state"]>) {
     // Pan/zoom is useful UI state but not an undoable diagram edit.
@@ -687,10 +377,10 @@ function BuilderPage() {
       const movedNodes = current.nodes.map((node) =>
         node.id === dragState.id
           ? {
-              ...node,
-              x: world.x - dragState.offsetX,
-              y: world.y - dragState.offsetY,
-            }
+            ...node,
+            x: world.x - dragState.offsetX,
+            y: world.y - dragState.offsetY,
+          }
           : node,
       );
       return {
@@ -1541,200 +1231,15 @@ function BuilderPage() {
   // inspector columns. The canvas remains the only place that owns gestures.
   return (
     <main className="builder-page flex h-dvh min-h-0 flex-col overflow-hidden bg-slate-100 text-slate-950">
-      <header className="builder-header flex h-14 shrink-0 items-center justify-between border-b border-slate-300 bg-white px-4 shadow-sm">
-        <div className="flex min-w-0 items-center gap-3">
-
-          <NextImage onClick={() => guardedNavigate("/schematics")} src="/logo.svg" alt="Logo" width={32} height={32} className="h-8 w-8 ml-4" />
-          <div className="builder-file-name min-w-0">
-            <div className="flex items-center">
-              <input
-                value={model.name}
-                onChange={(event) =>
-                  commit((draft) => ({ ...draft, name: event.target.value }))
-                }
-                className="w-52 rounded border border-transparent px-1 text-sm font-semibold focus:border-cyan-700 focus:outline-none"
-                aria-label="Schematic name"
-              />  
-            </div>
-          </div>
-          <span className="sr-only" role="status">{statusMessage}</span>
-          {isDirty && <span className="sr-only" aria-label="Unsaved changes">Unsaved changes</span>}
-        </div>
-
-        <div className="flex items-center gap-2">
-          <ToolbarButton
-            label="Undo"
-            disabled={history.past.length === 0}
-            onClick={undo}
-          />
-          <ToolbarButton
-            label="Redo"
-            disabled={history.future.length === 0}
-            onClick={redo}
-          />
-          <div className="mx-1 h-7 w-px bg-slate-300" />
-          <ToolbarButton label="-" className="builder-zoom-button" onClick={() => nudgeZoom(-ZOOM_STEP)} />
-          <input
-            className="h-8 w-28 accent-cyan-700"
-            type="range"
-            min={MIN_ZOOM}
-            max={MAX_ZOOM}
-            step={ZOOM_STEP}
-            value={model.canvas_state.zoom}
-            onChange={(event) => updateZoom(Number(event.target.value))}
-            aria-label="Canvas zoom"
-          />
-          <ToolbarButton label="+" className="builder-zoom-button" onClick={() => nudgeZoom(ZOOM_STEP)} />
-          <output className="w-14 text-right text-xs tabular-nums text-slate-600">
-            {model.canvas_state.zoom}%
-          </output>
-          <ToolbarButton label="Fit" onClick={fitDiagramToView} />
-          <div className="mx-1 h-7 w-px bg-slate-300" />
-          <label className="builder-line-color flex items-center gap-3 text-xs font-medium text-slate-600">
-            Line
-            <input
-              aria-label="Line color"
-              type="color"
-              value={model.styling.line_color}
-              onChange={(event) =>
-                setModel((current) => ({
-                  ...current,
-                  styling: {
-                    ...current.styling,
-                    line_color: event.target.value,
-                  },
-                }))
-              }
-              className="h-8 w-9 rounded border border-slate-300 bg-white"
-            />
-          </label>
-          <label className="flex items-center gap-1 text-xs font-medium text-slate-600">
-            Width
-            <input
-              aria-label="Line thickness"
-              type="number"
-              min="1"
-              max="8"
-              value={model.styling.line_thickness}
-              onChange={(event) =>
-                setModel((current) => ({
-                  ...current,
-                  styling: {
-                    ...current.styling,
-                    line_thickness: clamp(Number(event.target.value), 1, 8),
-                  },
-                }))
-              }
-              className="h-8 w-14 rounded border border-slate-300 px-2 text-xs"
-            />
-          </label>
-          <label className="flex items-center gap-1 text-xs font-medium text-slate-600">
-            Symbols
-            <input
-              aria-label="Symbol size"
-              type="number"
-              min="0.5"
-              max="2"
-              step="0.1"
-              value={model.styling.symbol_size}
-              onChange={(event) =>
-                setModel((current) => ({
-                  ...current,
-                  styling: {
-                    ...current.styling,
-                    symbol_size: clamp(Number(event.target.value), 0.5, 2),
-                  },
-                }))
-              }
-              className="h-8 w-14 rounded border border-slate-300 px-2 text-xs"
-            />
-          </label>
-          <button
-            ref={strainerSettingsButtonRef}
-            type="button"
-            aria-expanded={strainerSettingsPosition !== null}
-            aria-controls="strainer-settings-panel"
-            onClick={() => {
-              if (strainerSettingsPosition) {
-                setStrainerSettingsPosition(null);
-                return;
-              }
-              const rect = strainerSettingsButtonRef.current!.getBoundingClientRect();
-              setStrainerSettingsPosition({
-                left: Math.max(8, Math.min(rect.right - 256, window.innerWidth - 264)),
-                top: rect.bottom + 270 > window.innerHeight ? Math.max(8, rect.top - 270) : rect.bottom + 8,
-              });
-            }}
-            className="flex h-8 cursor-pointer items-center rounded border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 shadow-sm hover:border-cyan-700 hover:text-cyan-800"
-          >
-              Strainer Settings
-          </button>
-        </div>
-
-        {strainerSettingsPosition && createPortal(<>
-          <button type="button" aria-label="Close strainer settings" className="fixed inset-0 z-40 cursor-default bg-transparent" onClick={() => setStrainerSettingsPosition(null)} />
-          <div id="strainer-settings-panel" role="dialog" aria-label="Strainer Settings" className="fixed z-50 max-h-[calc(100dvh-16px)] w-64 max-w-[calc(100vw-16px)] overflow-y-auto rounded border border-slate-300 bg-white p-3 shadow-lg" style={strainerSettingsPosition}>
-              <p className="mb-3 text-xs text-slate-600">
-                Headloss multipliers saved with this schematic.
-              </p>
-              {(
-                Object.entries(model.filter_multipliers) as [
-                  keyof SchematicModel["filter_multipliers"],
-                  number,
-                ][]
-              ).map(([key, value]) => (
-                <label
-                  key={key}
-                  className="mb-2 flex items-center justify-between gap-3 text-xs font-medium capitalize text-slate-600"
-                >
-                  <span>{key.replaceAll("_", " ")}</span>
-                  <input
-                    aria-label={`${key.replaceAll("_", " ")} multiplier`}
-                    type="number"
-                    min="0"
-                    step="0.1"
-                    value={value}
-                    onChange={(event) => {
-                      const nextValue = Math.max(0, Number(event.target.value));
-                      setModel((current) => ({
-                        ...current,
-                        filter_multipliers: {
-                          ...current.filter_multipliers,
-                          [key]: nextValue,
-                        },
-                      }));
-                    }}
-                    className="h-8 w-20 rounded border border-slate-300 px-2 text-xs"
-                  />
-                </label>
-              ))}
-          </div>
-        </>, document.body)}
-
-        <div className="flex items-center gap-2">
-          <ToolbarButton
-            label="Library"
-            onClick={() => guardedNavigate("/schematics")}
-          />
-          <div className="mx-1 h-7 w-px bg-slate-300" />
-          <ToolbarButton label="New" onClick={guardedStartNewSchematic} />
-          <ToolbarButton
-            label="Save"
-            onClick={() => {
-              if (!isDirty) {
-                setStatusMessage("No changes to save");
-                return;
-              }
-              setSaveModalOpen(true);
-            }}
-          />
-          <ToolbarButton
-            label="Delete"
-            disabled={!model.id}
-            onClick={deleteSchematic}
-          />
-        </div>
-      </header>
+      <BuilderToolbar
+        model={model} setModel={setModel} history={history}
+        statusMessage={statusMessage} isDirty={isDirty} commit={commit}
+        undo={undo} redo={redo} nudgeZoom={nudgeZoom}
+        updateZoom={updateZoom} fitDiagramToView={fitDiagramToView}
+        guardedNavigate={guardedNavigate} guardedStartNewSchematic={guardedStartNewSchematic}
+        setSaveModalOpen={setSaveModalOpen} setStatusMessage={setStatusMessage}
+        deleteSchematic={deleteSchematic}
+      />
 
       {recoveryCandidate && (
         <div className="flex shrink-0 items-center justify-between border-b border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-950">
@@ -1778,7 +1283,7 @@ function BuilderPage() {
               onPick={setActiveTool}
             />
 
-            <section className="builder-visibility mt-4 rounded border border-slate-200 bg-slate-50 p-3">
+            <section className="builder-visibility mt-4 rounded border border-slate-200 bg-[#f9faff] p-3">
               <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
                 Parameter Labels
               </h2>
@@ -2005,66 +1510,58 @@ function BuilderPage() {
                 : `${selection.length} selected`
             }
           />
-          <div className="builder-inspector-content min-h-0 flex-1 overflow-y-auto">
-            <div className="builder-inspector-content-inner">
-              <div className="builder-inspector-fields p-4">
-                {selection.length !== 1 && (
-                  <EmptyProperties selectionCount={selection.length} />
-                )}
-                {selectedNode && (
-                  <ElementForm
-                    elementId={selectedNode.id}
-                    label={selectedNode.label}
-                    type={selectedNode.type}
-                    params={selectedNode.input_params}
-                    errors={validation}
-                    showAllErrors={showAllErrors}
-                    onRename={renameSelected}
-                    onParamChange={(key, value) =>
-                      updateNodeParam(selectedNode.id, key, value)
-                    }
-                    measurement={measurementForElement(selectedNode.id)}
-                    onMeasurementChange={(value) =>
-                      setMeasurementForElement(
-                        selectedNode.id,
-                        "NODE",
-                        "PRESSURE_HEAD",
-                        value,
-                      )
-                    }
-                  />
-                )}
-                {selectedLink && (
-                  <ElementForm
-                    elementId={selectedLink.id}
-                    label={selectedLink.label}
-                    type={selectedLink.type}
-                    params={selectedLink.input_params}
-                    errors={validation}
-                    showAllErrors={showAllErrors}
-                    onRename={renameSelected}
-                    onParamChange={(key, value) =>
-                      updateLinkParam(selectedLink.id, key, value)
-                    }
-                    measurement={measurementForElement(selectedLink.id)}
-                    onMeasurementChange={(value) =>
-                      setMeasurementForElement(
-                        selectedLink.id,
-                        "LINK",
-                        "FLOW_RATE",
-                        value,
-                      )
-                    }
-                  />
-                )}
-              </div>
-              {selectedElement && (
-                <ComputedResults
-                  type={selectedElement.type}
-                  computed={selectedElement.computed}
-                />
-              )}
-            </div>
+          <div className="min-h-0 flex-1 overflow-y-auto p-4">
+            {selection.length !== 1 && (
+              <EmptyProperties selectionCount={selection.length} />
+            )}
+            {selectedNode && (
+              <ElementForm
+                elementId={selectedNode.id}
+                label={selectedNode.label}
+                type={selectedNode.type}
+                params={selectedNode.input_params}
+                computed={selectedNode.computed}
+                errors={validation}
+                showAllErrors={showAllErrors}
+                onRename={renameSelected}
+                onParamChange={(key, value) =>
+                  updateNodeParam(selectedNode.id, key, value)
+                }
+                measurement={measurementForElement(selectedNode.id)}
+                onMeasurementChange={(value) =>
+                  setMeasurementForElement(
+                    selectedNode.id,
+                    "NODE",
+                    "PRESSURE_HEAD",
+                    value,
+                  )
+                }
+              />
+            )}
+            {selectedLink && (
+              <ElementForm
+                elementId={selectedLink.id}
+                label={selectedLink.label}
+                type={selectedLink.type}
+                params={selectedLink.input_params}
+                computed={selectedLink.computed}
+                errors={validation}
+                showAllErrors={showAllErrors}
+                onRename={renameSelected}
+                onParamChange={(key, value) =>
+                  updateLinkParam(selectedLink.id, key, value)
+                }
+                measurement={measurementForElement(selectedLink.id)}
+                onMeasurementChange={(value) =>
+                  setMeasurementForElement(
+                    selectedLink.id,
+                    "LINK",
+                    "FLOW_RATE",
+                    value,
+                  )
+                }
+              />
+            )}
           </div>
         </aside>
       </div>
@@ -2122,1162 +1619,6 @@ function BuilderPage() {
       />
     </main>
   );
-}
-
-// A palette choice arms a tool for click placement; native drag and drop uses
-// the same tool type so both entry paths create identical graph elements.
-function PaletteGroup({
-  title,
-  tools,
-  activeTool,
-  onPick,
-}: {
-  title: string;
-  tools: { type: ToolType; label: string; code: string; detail: string }[];
-  activeTool: ToolType | null;
-  onPick: (tool: ToolType | null) => void;
-}) {
-  return (
-    <section className="builder-palette-group mb-4">
-      <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
-        {title}
-      </h2>
-      <div className="grid grid-cols-1 gap-2">
-        {tools.map((tool) => (
-          <button
-            key={tool.type}
-            type="button"
-            draggable
-            onDragStart={(event) =>
-              event.dataTransfer.setData(
-                "application/audrolics-tool",
-                tool.type,
-              )
-            }
-            aria-pressed={activeTool === tool.type}
-            aria-label={`${tool.label}: ${tool.detail}`}
-            onClick={() => onPick(activeTool === tool.type ? null : tool.type)}
-            className={`builder-palette-tool flex items-center gap-3 rounded border px-3 py-2 text-left transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-700 ${
-              activeTool === tool.type
-                ? "border-cyan-700 bg-cyan-50 text-cyan-950"
-                : "border-slate-200 bg-white text-slate-800 hover:border-cyan-700"
-            }`}
-          >
-            <span className="builder-palette-symbol flex h-9 w-10 shrink-0 items-center justify-center rounded border border-slate-300 bg-slate-50 text-xs font-bold">
-              {tool.code}
-            </span>
-            <span className="min-w-0">
-              <span className="block text-sm font-medium">
-                {tool.type === "FILTER" ? <>Strainer<br />/ Filter</> : tool.label}
-              </span>
-            </span>
-          </button>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-// A node's saved position is the center of its artwork and the drag anchor.
-function NodeShape({
-  node,
-  model,
-  selected,
-  onPointerDown,
-  onPointerUp,
-  onContextMenu,
-}: {
-  node: BuilderNode;
-  model: SchematicModel;
-  selected: boolean;
-  onPointerDown: (
-    event: ReactPointerEvent<SVGGElement>,
-    node: BuilderNode,
-  ) => void;
-  onPointerUp: (
-    event: ReactPointerEvent<SVGGElement>,
-    node: BuilderNode,
-  ) => void;
-  onContextMenu: (event: ReactMouseEvent<SVGGElement>) => void;
-}) {
-  const symbol = nodeSymbols[node.type];
-  const width = symbol.width * model.styling.symbol_size;
-  const height = symbol.height * model.styling.symbol_size;
-  const labelX = node.x + width / 2 + 7;
-  return (
-    <g
-      data-element-id={node.id}
-      className="cursor-pointer"
-      onPointerDown={(event) => onPointerDown(event, node)}
-      onPointerUp={(event) => onPointerUp(event, node)}
-      onContextMenu={onContextMenu}
-    >
-      {selected && (
-        <rect
-          x={node.x - width / 2 - 5}
-          y={node.y - height / 2 - 5}
-          width={width + 10}
-          height={height + 10}
-          rx="5"
-          fill="none"
-          stroke="#1d4ed8"
-          strokeWidth="2"
-          pointerEvents="none"
-        />
-      )}
-      <image
-        href={symbol.src}
-        x={node.x - width / 2}
-        y={node.y - height / 2}
-        width={width}
-        height={height}
-        preserveAspectRatio="xMidYMid meet"
-      />
-      <text
-        x={labelX}
-        y={node.y + 4}
-        fill="#0f172a"
-        fontSize="12"
-        fontWeight="600"
-      >
-        {node.label}
-      </text>
-      {model.visibility.elevation &&
-        (typeof node.input_params.elevation === "string" ||
-          typeof node.input_params.elevation === "number") &&
-        node.input_params.elevation !== "" && (
-          <text
-            x={labelX}
-            y={node.y + 18}
-            fill="#64748b"
-            fontSize="11"
-          >
-            Elev {node.input_params.elevation} m
-          </text>
-        )}
-      {model.visibility.pressure &&
-        node.computed.pressure_head !== null &&
-        node.computed.pressure_head !== undefined && (
-          <text
-            x={labelX}
-            y={node.y + 32}
-            fill="#64748b"
-            fontSize="11"
-          >
-            Pressure {node.computed.pressure_head} m
-          </text>
-        )}
-    </g>
-  );
-}
-
-// Resolve link endpoints from node ids on every render. Cached link.points are
-// kept for export, while node positions remain the drawing source of truth.
-function LinkShape({
-  link,
-  model,
-  selected,
-  onPointerDown,
-  onContextMenu,
-}: {
-  link: BuilderLink;
-  model: SchematicModel;
-  selected: boolean;
-  onPointerDown: (
-    event: ReactPointerEvent<SVGGElement>,
-    link: BuilderLink,
-  ) => void;
-  onContextMenu: (event: ReactMouseEvent<SVGGElement>) => void;
-}) {
-  const from = model.nodes.find((node) => node.id === link.from_node_id);
-  const to = model.nodes.find((node) => node.id === link.to_node_id);
-  if (!from || !to) return null;
-  const segment = linkEndpoints(from, to, model.styling.symbol_size);
-  const mid = {
-    x: (segment.start.x + segment.end.x) / 2,
-    y: (segment.start.y + segment.end.y) / 2,
-  };
-  const dx = to.x - from.x;
-  const dy = to.y - from.y;
-  const length = Math.hypot(dx, dy);
-  const unit = length ? { x: dx / length, y: dy / length } : { x: 1, y: 0 };
-  const symbol = link.type === "PIPE" ? null : linkSymbols[link.type];
-  const symbolScale = symbol
-    ? fitInlineSymbolScale(segment.length, model.styling.symbol_size, symbol.portSpan)
-    : 0;
-  const leftPort = symbol
-    ? {
-        x: mid.x - unit.x * symbol.portSpan * symbolScale / 2,
-        y: mid.y - unit.y * symbol.portSpan * symbolScale / 2,
-      }
-    : mid;
-  const rightPort = symbol
-    ? {
-        x: mid.x + unit.x * symbol.portSpan * symbolScale / 2,
-        y: mid.y + unit.y * symbol.portSpan * symbolScale / 2,
-      }
-    : mid;
-  const angle = (Math.atan2(dy, dx) * 180) / Math.PI -
-    (symbol?.nativeAxis === "vertical" ? 90 : 0);
-  const radians = (angle * Math.PI) / 180;
-  const symbolHalfWidth = symbol
-    ? (Math.abs(Math.cos(radians)) * symbol.width +
-        Math.abs(Math.sin(radians)) * symbol.height) * symbolScale / 2
-    : 0;
-  const labelX = mid.x + symbolHalfWidth + 10;
-  const stroke = selected ? "#f97316" : model.styling.line_color;
-  const strokeWidth = selected
-    ? model.styling.line_thickness + 2
-    : model.styling.line_thickness;
-  return (
-    <g
-      data-element-id={link.id}
-      className="cursor-pointer"
-      onPointerDown={(event) => onPointerDown(event, link)}
-      onContextMenu={onContextMenu}
-    >
-      <line
-        x1={segment.start.x}
-        y1={segment.start.y}
-        x2={segment.end.x}
-        y2={segment.end.y}
-        stroke="transparent"
-        strokeWidth="18"
-        pointerEvents="stroke"
-      />
-      <line
-        x1={segment.start.x}
-        y1={segment.start.y}
-        x2={symbol && symbolScale > 0 ? leftPort.x : segment.end.x}
-        y2={symbol && symbolScale > 0 ? leftPort.y : segment.end.y}
-        stroke={stroke}
-        strokeWidth={strokeWidth}
-        strokeLinecap="butt"
-      />
-      {symbol && symbolScale > 0 && (
-        <>
-          <line
-            x1={rightPort.x}
-            y1={rightPort.y}
-            x2={segment.end.x}
-            y2={segment.end.y}
-            stroke={stroke}
-            strokeWidth={strokeWidth}
-            strokeLinecap="butt"
-          />
-          <LinkSymbol symbol={symbol} mid={mid} angle={angle} size={symbolScale} />
-        </>
-      )}
-      <text
-        x={labelX}
-        y={mid.y - 8}
-        fill="#0f172a"
-        fontSize="12"
-        fontWeight="600"
-      >
-        {link.label}
-      </text>
-      {model.visibility.length &&
-        typeof link.input_params.length === "string" &&
-        link.input_params.length !== "" && (
-          <text x={labelX} y={mid.y + 8} fill="#64748b" fontSize="11">
-            {link.input_params.length} m
-          </text>
-        )}
-      {model.visibility.diameter &&
-        (typeof link.input_params.diameter === "string" ||
-          typeof link.input_params.diameter === "number") &&
-        link.input_params.diameter !== "" && (
-          <text x={labelX} y={mid.y + 22} fill="#64748b" fontSize="11">
-            Dia {link.input_params.diameter} mm
-          </text>
-        )}
-      {model.visibility.flow &&
-        link.computed.flow_rate !== null &&
-        link.computed.flow_rate !== undefined && (
-          <text x={labelX} y={mid.y + 36} fill="#64748b" fontSize="11">
-            Flow {link.computed.flow_rate} L/s
-          </text>
-        )}
-    </g>
-  );
-}
-
-function LinkSymbol({
-  symbol,
-  mid,
-  angle,
-  size,
-}: {
-  symbol: { src: string; width: number; height: number; portAxisOffsetX?: number };
-  mid: Point;
-  angle: number;
-  size: number;
-}) {
-  const width = symbol.width * size;
-  const height = symbol.height * size;
-  return (
-    <image
-      href={symbol.src}
-      x={mid.x - width / 2 - (symbol.portAxisOffsetX ?? 0) * size}
-      y={mid.y - height / 2}
-      width={width}
-      height={height}
-      transform={`rotate(${angle} ${mid.x} ${mid.y})`}
-      preserveAspectRatio="xMidYMid meet"
-    />
-  );
-}
-
-function AnomalyOverlays({
-  model,
-  anomalyResult,
-  hovered,
-  onHover,
-  layer,
-}: {
-  model: SchematicModel;
-  anomalyResult: AnomalyApiResponse;
-  hovered: number | null;
-  onHover: (index: number | null) => void;
-  layer: "routes" | "labels";
-}) {
-  return (
-    <>
-      {layer === "labels" && anomalyResult.flagged_points.map((flag, index) => {
-        const node = model.nodes.find((item) => item.id === flag.element_id);
-        const link = model.links.find((item) => item.id === flag.element_id);
-        const from = link && model.nodes.find((item) => item.id === link.from_node_id);
-        const to = link && model.nodes.find((item) => item.id === link.to_node_id);
-        const point = node ? { x: node.x, y: node.y } : from && to
-          ? { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 } : null;
-        if (!point) return null;
-        return (
-          <g key={`flag-${index}`} pointerEvents="none" aria-label={`Anomaly at ${flag.element_id}`}>
-            <circle cx={point.x} cy={point.y - 28} r="11" fill="#fff" stroke="#b91c1c" strokeWidth="2" />
-            <text x={point.x} y={point.y - 24} textAnchor="middle" fill="#b91c1c" fontSize="12" fontWeight="bold">!</text>
-            <title>{`Measured ${flag.actual}; expected ${flag.expected}; residual ${flag.residual}`}</title>
-          </g>
-        );
-      })}
-      {anomalyResult.suspect_segments.map((segment, index) => {
-        const path =
-          segment.pipe_ids && segment.pipe_ids.length > 0
-            ? segment.pipe_ids
-            : segment.path && segment.path.length > 0
-              ? segment.path
-              : findLinkPath(segment.from, segment.to, model.links);
-        if (!path || path.length === 0) return null;
-        const visibleLinks: { start: Point; end: Point }[] = [];
-        for (const linkId of path) {
-          const link = model.links.find((l) => l.id === linkId);
-          if (!link) continue;
-          const from = model.nodes.find((n) => n.id === link.from_node_id);
-          const to = model.nodes.find((n) => n.id === link.to_node_id);
-          if (!from || !to) continue;
-          visibleLinks.push(linkEndpoints(from, to, model.styling.symbol_size));
-        }
-        if (visibleLinks.length === 0) return null;
-        const middleLink = visibleLinks[Math.floor(visibleLinks.length / 2)];
-        const mid = {
-          x: (middleLink.start.x + middleLink.end.x) / 2,
-          y: (middleLink.start.y + middleLink.end.y) / 2,
-        };
-        const color = segment.signature === "LEAK" ? "#ef4444" : "#f97316";
-        if (layer === "routes") {
-          return (
-            <g key={index} onMouseEnter={() => onHover(index)} onMouseLeave={() => onHover(null)}>
-              {visibleLinks.map(({ start, end }, linkIndex) => (
-                <line
-                  key={linkIndex}
-                  x1={start.x}
-                  y1={start.y}
-                  x2={end.x}
-                  y2={end.y}
-                  stroke={color}
-                  strokeWidth="6"
-                  strokeDasharray="6 4"
-                  opacity="0.6"
-                  pointerEvents="stroke"
-                  style={{ cursor: "pointer" }}
-                />
-              ))}
-            </g>
-          );
-        }
-        if (hovered !== index) return null;
-        return (
-          <g key={index} pointerEvents="none">
-            <rect
-              x={mid.x + 8}
-              y={mid.y - 38}
-              width="160"
-              height="34"
-              rx="4"
-              fill="rgba(15, 23, 42, 0.9)"
-            />
-            <text
-              x={mid.x + 16}
-              y={mid.y - 18}
-              fill="white"
-              fontSize="11"
-              fontWeight="600"
-            >
-              {segment.signature} — {Math.round(segment.confidence)}% confidence
-            </text>
-          </g>
-        );
-      })}
-    </>
-  );
-}
-
-function PendingLink({
-  model,
-  pendingLink,
-}: {
-  model: SchematicModel;
-  pendingLink: { fromNodeId: string; cursor: Point };
-}) {
-  const from = model.nodes.find((node) => node.id === pendingLink.fromNodeId);
-  if (!from) return null;
-  const start = nodeBoundaryPoint(
-    from,
-    pendingLink.cursor,
-    model.styling.symbol_size,
-  );
-  const end = distance(from, pendingLink.cursor) < distance(from, start)
-    ? start
-    : pendingLink.cursor;
-  return (
-    <line
-      x1={start.x}
-      y1={start.y}
-      x2={end.x}
-      y2={end.y}
-      stroke="#f97316"
-      strokeWidth="2"
-      strokeDasharray="8 6"
-    />
-  );
-}
-
-// The inspector separates editable design inputs, optional field readings,
-// and read-only simulation results for the selected graph element.
-function ElementForm(props: {
-  elementId: string;
-  label: string;
-  type: NodeType | LinkType;
-  params: InputParams;
-  errors: Record<string, string>;
-  showAllErrors: boolean;
-  onRename: (value: string) => void;
-  onParamChange: (key: string, value: FieldValue) => void;
-  measurement?: Measurement | null;
-  onMeasurementChange?: (value: number | null) => void;
-}) {
-  const fields = fieldsForType(props.type, props.params);
-  return (
-    <div className="space-y-4">
-      <section className="builder-element-identity rounded border border-slate-200 bg-white p-4">
-        <label className="text-xs font-medium text-slate-500">Label</label>
-        <input
-          value={props.label}
-          onChange={(event) => props.onRename(event.target.value)}
-          className="mt-1 h-9 w-full rounded border border-slate-300 px-2 text-sm"
-        />
-        <p className="mt-2 text-xs text-slate-500">{props.type}</p>
-      </section>
-
-      <section className="builder-input-parameters rounded border border-slate-200 bg-white">
-        <div className="border-b border-slate-200 px-4 py-3">
-          <h2 className="text-sm font-semibold text-slate-900">
-            Input Parameters
-          </h2>
-        </div>
-        <div className="space-y-3 p-4">
-          {fields.map((field) => (
-            <FieldControl
-              key={field.key}
-              elementId={props.elementId}
-              field={field}
-              value={props.params[field.key]}
-              error={props.errors[`${props.elementId}.${field.key}`]}
-              showAllErrors={props.showAllErrors}
-              onChange={(value) => props.onParamChange(field.key, value)}
-            />
-          ))}
-        </div>
-      </section>
-
-      {props.onMeasurementChange && (
-        <section className="builder-field-measurement rounded border border-slate-200 bg-white">
-          <div className="border-b border-slate-200 px-4 py-3">
-            <h2 className="text-sm font-semibold text-slate-900">
-              Field Measurement
-            </h2>
-          </div>
-          <div className="space-y-3 p-4">
-            <label className="block">
-              <span className="text-xs font-medium text-slate-500">
-                {props.type === "PIPE" || props.type === "PUMP" ||
-                props.type === "VALVE" || props.type === "FILTER"
-                  ? "Flow rate (L/s)"
-                  : "Pressure head (m)"}
-              </span>
-              <input
-                type="number"
-                value={props.measurement?.value ?? ""}
-                onChange={(event) => {
-                  const value = event.target.value;
-                  props.onMeasurementChange!(
-                    value === "" ? null : Number(value),
-                  );
-                }}
-                className="mt-1 h-9 w-full rounded border border-slate-300 px-2 text-sm"
-              />
-            </label>
-          </div>
-        </section>
-      )}
-    </div>
-  );
-}
-
-function ComputedResults(props: {
-  type: NodeType | LinkType;
-  computed: ComputedValues;
-}) {
-  return (
-    <section className="builder-computed-results border-t border-slate-200 bg-slate-100">
-        <div className="border-b border-slate-200 px-4 py-3">
-          <h2 className="text-sm font-semibold text-slate-900">
-            Computed Results
-          </h2>
-          <p className="mt-1 text-xs text-slate-500">
-            Read-only simulation outputs.
-          </p>
-        </div>
-        <div className="space-y-2 p-4">
-          {Object.keys(computedForType(props.type)).map((key) => {
-            const value = props.computed[key];
-            const display = value === null || value === undefined ? "Pending" : String(value);
-            return (
-              <div
-                key={key}
-                className="flex justify-between rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs"
-              >
-                <span className="font-medium text-slate-600">
-                  {key === "energy" ? "Energy (kWh per 1 h)" : labelize(key)}
-                </span>
-                <span className={value === null || value === undefined ? "text-slate-400" : "text-slate-800"}>
-                  {display}
-                </span>
-              </div>
-            );
-          })}
-        </div>
-    </section>
-  );
-}
-
-type FieldDef =
-  | { key: string; label: string; kind: "number" | "text"; unit?: string }
-  | { key: string; label: string; kind: "select"; options: string[] }
-  | { key: string; label: string; kind: "curve"; yKey: "head" | "headloss" };
-
-function FieldControl(props: {
-  elementId: string;
-  field: FieldDef;
-  value: FieldValue;
-  error?: string;
-  showAllErrors: boolean;
-  onChange: (value: FieldValue) => void;
-}) {
-  // Analysis reveals validation messages; drafts remain freely editable.
-  const showError = props.error && props.showAllErrors;
-  if (props.field.kind === "select") {
-    return (
-      <label className="block">
-        <span className="text-xs font-medium text-slate-500">
-          {props.field.label}
-        </span>
-        <select
-          value={String(props.value ?? "")}
-          onChange={(event) => props.onChange(event.target.value)}
-          className="mt-1 h-9 w-full rounded border border-slate-300 px-2 text-sm"
-        >
-          <option value="">Select</option>
-          {props.field.options.map((option) => (
-            <option key={option} value={option}>
-              {option}
-            </option>
-          ))}
-        </select>
-        {showError && (
-          <p className="mt-1 text-xs text-red-600">{props.error}</p>
-        )}
-      </label>
-    );
-  }
-  if (props.field.kind === "curve") {
-    const curveField = props.field;
-    const yKey = curveField.yKey;
-    const points = Array.isArray(props.value) ? props.value : [];
-    return (
-      <div>
-        <div className="mb-2 flex items-center justify-between">
-          <span className="text-xs font-medium text-slate-500">
-            {props.field.label}
-          </span>
-          <button
-            type="button"
-            onClick={() =>
-              props.onChange([...points, { flow: "", [yKey]: "" }])
-            }
-            className="rounded border border-slate-300 px-2 py-1 text-xs"
-          >
-            Add row
-          </button>
-        </div>
-        <div className="space-y-2">
-          {points.map((point, index) => (
-            <div key={index} className="grid grid-cols-[1fr_1fr_auto] gap-2">
-              <input
-                placeholder="Flow"
-                value={point.flow}
-                onChange={(event) =>
-                  props.onChange(
-                    points.map((item, itemIndex) =>
-                      itemIndex === index
-                        ? { ...item, flow: event.target.value }
-                        : item,
-                    ),
-                  )
-                }
-                className="h-8 rounded border border-slate-300 px-2 text-xs"
-              />
-              <input
-                placeholder={yKey}
-                value={point[yKey] ?? ""}
-                onChange={(event) =>
-                  props.onChange(
-                    points.map((item, itemIndex) =>
-                      itemIndex === index
-                        ? { ...item, [yKey]: event.target.value }
-                        : item,
-                    ),
-                  )
-                }
-                className="h-8 rounded border border-slate-300 px-2 text-xs"
-              />
-              <button
-                type="button"
-                onClick={() =>
-                  props.onChange(
-                    points.filter((_, itemIndex) => itemIndex !== index),
-                  )
-                }
-                className="rounded border border-slate-300 px-2 text-xs"
-              >
-                Remove
-              </button>
-            </div>
-          ))}
-        </div>
-        <CurvePreview points={points} yKey={yKey} />
-        {showError && (
-          <p className="mt-1 text-xs text-red-600">{props.error}</p>
-        )}
-      </div>
-    );
-  }
-  return (
-    <label className="block">
-      <span className="text-xs font-medium text-slate-500">
-        {props.field.label}
-        {props.field.unit ? ` (${props.field.unit})` : ""}
-      </span>
-      <input
-        type={props.field.kind === "number" ? "number" : "text"}
-        value={
-          typeof props.value === "string" || typeof props.value === "number"
-            ? props.value
-            : ""
-        }
-        onChange={(event) => props.onChange(event.target.value)}
-        className="mt-1 h-9 w-full rounded border border-slate-300 px-2 text-sm"
-      />
-      {showError && <p className="mt-1 text-xs text-red-600">{props.error}</p>}
-    </label>
-  );
-}
-
-function CurvePreview({
-  points,
-  yKey,
-}: {
-  points: CurvePoint[];
-  yKey: "head" | "headloss";
-}) {
-  const parsed = points
-    .map((point) => ({ x: Number(point.flow), y: Number(point[yKey]) }))
-    .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
-  if (parsed.length < 2)
-    return (
-      <div className="mt-2 h-20 rounded border border-dashed border-slate-300 bg-slate-50" />
-    );
-  const maxX = Math.max(...parsed.map((point) => point.x), 1);
-  const maxY = Math.max(...parsed.map((point) => point.y), 1);
-  const d = parsed
-    .map(
-      (point, index) =>
-        `${index === 0 ? "M" : "L"} ${(point.x / maxX) * 140 + 10} ${70 - (point.y / maxY) * 60}`,
-    )
-    .join(" ");
-  return (
-    <svg className="mt-2 h-20 w-full rounded border border-slate-200 bg-slate-50">
-      <path d={d} fill="none" stroke="#0f766e" strokeWidth="2" />
-    </svg>
-  );
-}
-
-function EmptyProperties({ selectionCount }: { selectionCount: number }) {
-  return (
-    <section className="rounded border border-dashed border-slate-300 bg-slate-50 p-4">
-      <h2 className="text-sm font-semibold text-slate-900">Selection</h2>
-      <p className="mt-2 text-sm leading-6 text-slate-600">
-        {selectionCount === 0
-          ? "Select an element to edit its Section 3 input parameters."
-          : "Multiple elements selected. Move, copy, delete, or use a single selection for properties."}
-      </p>
-    </section>
-  );
-}
-
-function ToolbarButton({
-  label,
-  disabled = false,
-  onClick,
-  className = "",
-}: {
-  label: string;
-  disabled?: boolean;
-  onClick?: () => void;
-  className?: string;
-}) {
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={onClick}
-      className={`builder-toolbar-button h-8 rounded border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 shadow-sm transition hover:border-cyan-700 hover:text-cyan-800 focus-visible:outline focus-visible:outline-offset-2 focus-visible:outline-cyan-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 disabled:shadow-none ${className}`}
-    >
-      {label}
-    </button>
-  );
-}
-
-function PanelHeader({ title, detail }: { title: string; detail: string }) {
-  return (
-    <div className="builder-panel-heading border-b border-slate-200 px-4 py-3">
-      <h2 className="text-sm font-semibold text-slate-900">{title}</h2>
-      <p className="mt-1 text-xs text-slate-500">{detail}</p>
-    </div>
-  );
-}
-
-// Field definitions determine both the controls shown in the inspector and
-// their labels/units; the underlying model still stores plain input_params.
-function fieldsForType(
-  type: NodeType | LinkType,
-  params: InputParams,
-): FieldDef[] {
-  // This is the frontend mirror of SRS Section 3.1. The backend validates the
-  // same concepts before running analysis.
-  if (type === "JUNCTION")
-    return [
-      { key: "elevation", label: "Elevation", kind: "number", unit: "m" },
-      { key: "base_demand", label: "Base Demand", kind: "number", unit: "L/s" },
-      { key: "demand_pattern", label: "Demand Pattern", kind: "text" },
-    ];
-  if (type === "RESERVOIR")
-    return [
-      {
-        key: "total_head",
-        label: "Total Head / Elevation",
-        kind: "number",
-        unit: "m",
-      },
-    ];
-  if (type === "TANK")
-    return [
-      { key: "elevation", label: "Elevation", kind: "number", unit: "m" },
-      { key: "diameter", label: "Diameter", kind: "number", unit: "m" },
-      { key: "min_level", label: "Min Level", kind: "number", unit: "m" },
-      { key: "max_level", label: "Max Level", kind: "number", unit: "m" },
-      {
-        key: "initial_level",
-        label: "Initial Level",
-        kind: "number",
-        unit: "m",
-      },
-    ];
-  if (type === "PIPE")
-    return [
-      { key: "length", label: "Length", kind: "number", unit: "m" },
-      { key: "diameter", label: "Diameter", kind: "number", unit: "mm" },
-      { key: "roughness", label: "Roughness C-factor", kind: "number" },
-      {
-        key: "minor_loss_coeff",
-        label: "Minor Loss Coefficient",
-        kind: "number",
-      },
-      {
-        key: "status",
-        label: "Status",
-        kind: "select",
-        options: ["OPEN", "CLOSED"],
-      },
-    ];
-  if (type === "PUMP")
-    return [
-      { key: "rated_power", label: "Rated Power", kind: "number", unit: "kW" },
-      { key: "speed", label: "Speed", kind: "number" },
-      {
-        key: "status",
-        label: "Status",
-        kind: "select",
-        options: ["ON", "OFF"],
-      },
-      { key: "pump_curve", label: "Pump Curve", kind: "curve", yKey: "head" },
-    ];
-  if (type === "VALVE") {
-    const valveType = params.valve_type;
-    return [
-      {
-        key: "valve_type",
-        label: "Valve Type",
-        kind: "select",
-        options: ["PRV", "PSV", "PBV", "FCV", "TCV", "GPV"],
-      },
-      { key: "diameter", label: "Diameter", kind: "number", unit: "mm" },
-      valveType === "GPV"
-        ? {
-            key: "gpv_curve",
-            label: "GPV Headloss Curve",
-            kind: "curve",
-            yKey: "headloss",
-          }
-        : { key: "valve_setting", label: "Setting", kind: "number" },
-      {
-        key: "status",
-        label: "Status",
-        kind: "select",
-        options: ["OPEN", "CLOSED", "ACTIVE"],
-      },
-    ];
-  }
-  return [
-    {
-      key: "mesh_size",
-      label: "Mesh / Screen Size",
-      kind: "number",
-      unit: "mm",
-    },
-    {
-      key: "minor_loss_coeff",
-      label: "Minor Loss Coefficient",
-      kind: "number",
-    },
-    {
-      key: "filter_status",
-      label: "Strainer / Filter Status",
-      kind: "select",
-      options: ["CLEAN", "PARTIALLY_CLOGGED", "CLOGGED"],
-    },
-  ];
-}
-
-function defaultNodeParams(type: NodeType): InputParams {
-  if (type === "JUNCTION")
-    return { elevation: "", base_demand: "", demand_pattern: "" };
-  if (type === "RESERVOIR") return { total_head: "" };
-  return {
-    elevation: "",
-    diameter: "",
-    min_level: "",
-    max_level: "",
-    initial_level: "",
-  };
-}
-
-function defaultLinkParams(type: LinkType): InputParams {
-  if (type === "PIPE")
-    return {
-      length: "",
-      diameter: "",
-      roughness: 140,
-      minor_loss_coeff: 0,
-      status: "OPEN",
-    };
-  if (type === "PUMP")
-    return { rated_power: "", speed: "", status: "", pump_curve: [] };
-  if (type === "VALVE")
-    return {
-      valve_type: "",
-      diameter: "",
-      valve_setting: "",
-      status: "",
-      gpv_curve: [],
-    };
-  return { mesh_size: "", minor_loss_coeff: "", filter_status: "" };
-}
-
-function defaultNodeComputed(type: NodeType): ComputedValues {
-  if (type === "JUNCTION") return { pressure_head: null, actual_demand: null };
-  if (type === "RESERVOIR") return { outflow: null };
-  return { hydraulic_head: null, current_volume: null };
-}
-
-function defaultLinkComputed(type: LinkType): ComputedValues {
-  if (type === "PIPE")
-    return {
-      flow_rate: null,
-      velocity: null,
-      headloss: null,
-      unit_headloss: null,
-    };
-  if (type === "PUMP") return { flow_rate: null, head_added: null, energy: null };
-  if (type === "VALVE") return { flow_rate: null, pressure_drop: null };
-  return { flow_rate: null, headloss: null };
-}
-
-function computedForType(type: NodeType | LinkType): ComputedValues {
-  return isNodeTool(type)
-    ? defaultNodeComputed(type)
-    : defaultLinkComputed(type);
-}
-
-function nextLabel(type: ToolType, model: SchematicModel): string {
-  const prefix: Record<ToolType, string> = {
-    JUNCTION: "J",
-    RESERVOIR: "R",
-    TANK: "T",
-    PIPE: "P",
-    PUMP: "PU",
-    VALVE: "V",
-    FILTER: "F",
-  };
-  const labels = [
-    ...model.nodes.map((node) => node.label),
-    ...model.links.map((link) => link.label),
-  ];
-  let index = 1;
-  while (labels.includes(`${prefix[type]}-${index}`)) index += 1;
-  return `${prefix[type]}-${index}`;
-}
-
-function validateModel(model: SchematicModel): Record<string, string> {
-  // Validation keys are `${elementId}.${field}` so field controls can decide
-  // when to reveal their own message.
-  const errors: Record<string, string> = {};
-  for (const node of model.nodes) {
-    for (const field of fieldsForType(node.type, node.input_params)) {
-      if (field.kind !== "curve")
-        validateField(
-          `${node.id}.${field.key}`,
-          field,
-          node.input_params[field.key],
-          errors,
-        );
-    }
-    if (node.type === "TANK") {
-      const tankError = validateTankLevels(node.input_params);
-      if (tankError) errors[`${node.id}.initial_level`] = tankError;
-    }
-  }
-  for (const link of model.links) {
-    if (!link.from_node_id || !link.to_node_id)
-      errors[`${link.id}.endpoints`] = "Both endpoints must be connected.";
-    for (const field of fieldsForType(link.type, link.input_params)) {
-      if (link.type === "PUMP" && (field.key === "rated_power" || field.key === "pump_curve")) continue;
-      validateField(
-        `${link.id}.${field.key}`,
-        field,
-        link.input_params[field.key],
-        errors,
-      );
-    }
-    if (link.type === "PUMP") {
-      const curve = link.input_params.pump_curve;
-      const power = link.input_params.rated_power;
-      if (Array.isArray(curve) && curve.length > 0) {
-        validateField(`${link.id}.pump_curve`, { key: "pump_curve", label: "Pump Curve", kind: "curve", yKey: "head" }, curve, errors);
-      } else if (power === "" || power === undefined) {
-        errors[`${link.id}.rated_power`] = "Enter rated power or a pump curve.";
-      } else {
-        validateField(`${link.id}.rated_power`, { key: "rated_power", label: "Rated Power", kind: "number" }, power, errors);
-      }
-    }
-  }
-  return errors;
-}
-
-function validateField(
-  path: string,
-  field: FieldDef,
-  value: FieldValue,
-  errors: Record<string, string>,
-) {
-  const error = validateFieldValue(field, value);
-  if (error) errors[path] = error;
-}
-
-function toApiPayload(model: SchematicModel) {
-  // Keep form strings and incomplete curve rows intact when saving drafts.
-  return model;
-}
-
-function toAnalysisPayload(model: SchematicModel) {
-  return {
-    ...model,
-    nodes: model.nodes.map((node) => ({
-      ...node,
-      input_params: normalizeParams(node.input_params),
-    })),
-    links: model.links.map((link) => ({
-      ...link,
-      input_params: normalizeParams(link.input_params),
-    })),
-  };
-}
-
-function fromApiPayload(
-  payload: SchematicModel & { id?: string },
-): SchematicModel {
-  return {
-    ...defaultModel(),
-    ...payload,
-    nodes: payload.nodes ?? [],
-    links: payload.links ?? [],
-    measurements: payload.measurements ?? [],
-  };
-}
-
-function findLinkPath(
-  fromNodeId: string,
-  toNodeId: string,
-  links: BuilderLink[],
-): string[] | null {
-  const adjacency = new Map<string, string[]>();
-  for (const link of links) {
-    if (!link.from_node_id || !link.to_node_id) continue;
-    const list = adjacency.get(link.from_node_id) ?? [];
-    list.push(link.id);
-    adjacency.set(link.from_node_id, list);
-    const reverse = adjacency.get(link.to_node_id) ?? [];
-    reverse.push(link.id);
-    adjacency.set(link.to_node_id, reverse);
-  }
-  const visitedNodes = new Set<string>();
-  const queue: { nodeId: string; path: string[] }[] = [{ nodeId: fromNodeId, path: [] }];
-  while (queue.length > 0) {
-    const { nodeId, path } = queue.shift()!;
-    if (nodeId === toNodeId) return path;
-    if (visitedNodes.has(nodeId)) continue;
-    visitedNodes.add(nodeId);
-    for (const linkId of adjacency.get(nodeId) ?? []) {
-      const link = links.find((l) => l.id === linkId);
-      if (!link) continue;
-      const nextNodeId = link.from_node_id === nodeId ? link.to_node_id : link.from_node_id;
-      if (!nextNodeId) continue;
-      queue.push({ nodeId: nextNodeId, path: [...path, linkId] });
-    }
-  }
-  return null;
-}
-
-function normalizeParams(params: InputParams): InputParams {
-  // Form inputs stay as strings for editing. API payloads convert numeric-looking
-  // numeric fields for analysis; text fields such as demand_pattern stay strings.
-  const numericKeys = new Set([
-    "elevation", "base_demand", "total_head", "diameter", "min_level", "max_level",
-    "initial_level", "length", "roughness", "minor_loss_coeff", "rated_power",
-    "speed", "valve_setting", "mesh_size",
-  ]);
-  return Object.fromEntries(
-    Object.entries(params).map(([key, value]) => {
-      if (Array.isArray(value)) {
-        return [
-          key,
-          value.map((point) =>
-            Object.fromEntries(
-              Object.entries(point).map(([pointKey, pointValue]) => [
-                pointKey,
-                pointValue === "" ? undefined : Number(pointValue),
-              ]),
-            ),
-          ),
-        ];
-      }
-      if (
-        numericKeys.has(key) && typeof value === "string" &&
-        value !== "" &&
-        Number.isFinite(Number(value))
-      )
-        return [key, Number(value)];
-      return [key, value];
-    }),
-  );
-}
-
-function updateLinkPointsForNodes(links: BuilderLink[], nodes: BuilderNode[]) {
-  return links.map((link) => {
-    const from = nodes.find((node) => node.id === link.from_node_id);
-    const to = nodes.find((node) => node.id === link.to_node_id);
-    return from && to
-      ? {
-          ...link,
-          points: [
-            { x: from.x, y: from.y },
-            { x: to.x, y: to.y },
-          ],
-        }
-      : link;
-  });
-}
-
-function toggleSelection(selection: Selection[], item: Selection) {
-  const exists = selection.some(
-    (selected) => selected.kind === item.kind && selected.id === item.id,
-  );
-  return exists
-    ? selection.filter(
-        (selected) => !(selected.kind === item.kind && selected.id === item.id),
-      )
-    : [...selection, item];
-}
-
-function normalizeBox(start: Point, current: Point) {
-  return {
-    x: Math.min(start.x, current.x),
-    y: Math.min(start.y, current.y),
-    width: Math.abs(current.x - start.x),
-    height: Math.abs(current.y - start.y),
-  };
-}
-
-function distance(a: Point, b: Point) {
-  return Math.hypot(a.x - b.x, a.y - b.y);
-}
-
-function labelize(key: string) {
-  return key.replaceAll("_", " ");
-}
-
-function csvCell(value: string) {
-  return `"${value.replaceAll('"', '""')}"`;
 }
 
 // Standalone SVG files and PNG rasterization cannot rely on /public URLs.
