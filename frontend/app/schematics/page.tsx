@@ -125,7 +125,7 @@ function SchematicsPage() {
         alt=""
         width={392}
         height={455}
-        className="pointer-events-none absolute -right-8 top-8 z-20 h-[clamp(180px,20vw,310px)] w-auto max-w-none"
+        className="pointer-events-none absolute -right-8 top-11 z-20 h-[clamp(180px,20vw,310px)] w-auto max-w-none"
       />
 
       <section className="relative isolate flex min-h-10 w-full items-center overflow-hidden bg-[#f0f3ff]" aria-labelledby="new-document-title">

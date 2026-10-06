@@ -1,5 +1,5 @@
 vi.mock("@/lib/session", () => ({
-  useSession: () => ({ user: { id: "test-user", name: "Test User", email: "engineer@audrolics.dev", role: "USER" }, ready: true, logout: vi.fn().mockResolvedValue(undefined) }),
+  useSession: () => ({ user: { id: "test-user", fullName: "Test User", email: "engineer@audrolics.dev", role: "USER" }, ready: true, logout: vi.fn().mockResolvedValue(undefined) }),
   currentAccountId: () => "test-user",
   apiFetch: (path: string, init?: RequestInit) => fetch(path, init),
 }));
@@ -54,9 +54,44 @@ describe('BuilderPage', () => {
         expect(screen.getByRole('button', { name: /save/i })).toBeInTheDocument()
         expect(screen.getByText('Ready to build')).toHaveClass('sr-only')
         expect(screen.getByLabelText(/line color/i)).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /reservoir.*hatched triangle/i })).toHaveTextContent('Reservoir')
+        expect(screen.queryByText(/hatched triangle/i)).not.toBeInTheDocument()
+        const strainer = screen.getByRole('button', { name: /strainer.*inline device/i })
+        expect(strainer).toHaveTextContent('Strainer/ Filter')
+        expect(strainer.querySelector('br')).toBeInTheDocument()
         expect(screen.getByText(/strainer settings/i)).toBeInTheDocument()
         expect(screen.queryByText('engineer@audrolics.dev')).not.toBeInTheDocument()
         expect(screen.queryByRole('button', { name: /account|sign out|log out/i })).not.toBeInTheDocument()
+    })
+
+    it('shows strainer settings outside the clipped toolbar when clicked', () => {
+        render(<BuilderPage />)
+        fireEvent.click(screen.getByText('Strainer Settings'))
+        const setting = screen.getByRole('spinbutton', { name: /clean multiplier/i })
+        expect(setting).toBeVisible()
+        expect(setting.closest('.builder-header')).toBeNull()
+        fireEvent.change(setting, { target: { value: '2' } })
+        fireEvent.keyDown(window, { key: 'Escape' })
+        expect(screen.queryByRole('dialog', { name: 'Strainer Settings' })).toBeNull()
+        fireEvent.click(screen.getByText('Strainer Settings'))
+        expect(screen.getByRole('spinbutton', { name: /clean multiplier/i })).toHaveValue(2)
+    })
+
+    it('keeps computed results at the end of the scrolling properties content', () => {
+        const view = render(<BuilderPage />)
+        const canvas = view.getByRole('application', { name: /schematic builder canvas/i })
+        fireEvent.click(view.getByRole('button', { name: /reservoir.*hatched triangle/i }))
+        fireEvent.pointerDown(canvas, { clientX: 100, clientY: 120, pointerId: 1, button: 0 })
+        fireEvent.pointerUp(canvas, { clientX: 100, clientY: 120, pointerId: 1 })
+
+        const inspector = view.container.querySelector('.builder-inspector')!
+        const fields = inspector.querySelector('.builder-inspector-fields')!
+        const results = inspector.querySelector('.builder-computed-results')!
+        expect(fields).toContainElement(view.getByText('Input Parameters'))
+        expect(results).toContainElement(view.getByText('Computed Results'))
+        expect(results.parentElement).toBe(inspector.querySelector('.builder-inspector-content-inner'))
+        expect(results.parentElement?.lastElementChild).toBe(results)
+        expect(results.closest('.builder-inspector-content')).toBeInTheDocument()
     })
 
     it('does not open the save modal when nothing has changed', () => {

@@ -26,13 +26,15 @@ The command generates and prints a strong temporary password once, and refuses t
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| POST | `/api/v1/auth/register` | Create a USER and start a session (`name`, `email`, `password`) |
+| POST | `/api/v1/auth/register` | Create a USER and start a session (`fullName`, `email`, `password`, `acceptedPolicies: true`) |
 | POST | `/api/v1/auth/login` | Start a session (`email`, `password`) |
 | POST | `/api/v1/auth/refresh` | Rotate the refresh cookie and return a new access token |
 | POST | `/api/v1/auth/logout` | Revoke the refresh session and clear its cookie |
 | GET | `/api/v1/auth/me` | Return the active account; Bearer token required |
 
-Register and login return `{ "token": "...", "user": { "id": "...", "name": "...", "email": "...", "role": "USER" } }`. The access token expires after 15 minutes. An HTTP-only refresh cookie survives browser restarts and expires after 30 days without refresh. Refresh rotates the stored token and extends the inactivity deadline. Logout, suspension, and account deletion revoke sessions. Login attempts are limited in MongoDB, and repeated failures temporarily lock an account. Email verification and email password reset are deferred for this prototype.
+Register and login return `{ "token": "...", "user": { "id": "...", "fullName": "...", "email": "...", "role": "USER" } }`. Refresh returns the same shape; `GET /auth/me` returns `{ "user": { "id": "...", "fullName": "...", "email": "...", "role": "USER" } }`. Account `status` is not included in auth responses. The access token expires after 15 minutes. An HTTP-only refresh cookie survives browser restarts and expires after 30 days without refresh. Refresh rotates the stored token and extends the inactivity deadline. Logout, suspension, and account deletion revoke sessions. Login attempts are limited in MongoDB, and repeated failures temporarily lock an account. Email verification and email password reset are deferred for this prototype.
+
+Public signup requires `acceptedPolicies: true` after the user reviews the linked draft Terms and Privacy notice. This flag is validated but not stored as an acknowledgment. Admin-created and existing accounts are unaffected. The drafts identify Oceans and Arrays Team as the prototype operator and direct data requests through an Audrolics administrator.
 
 All schematic, simulation, anomaly, and admin APIs require `Authorization: Bearer <token>`. A browser visit to a raw API URL without that header receives 401. `X-User-Id` is ignored.
 
@@ -54,7 +56,7 @@ Only the seeded `ADMIN` can use these endpoints. The admin cannot read diagram n
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET, POST | `/api/v1/admin/users` | List regular accounts; create a USER |
-| GET, PATCH, DELETE | `/api/v1/admin/users/:id` | View, edit name/email, soft-delete a USER |
+| GET, PATCH, DELETE | `/api/v1/admin/users/:id` | View, edit fullName/email, soft-delete a USER |
 | PATCH | `/api/v1/admin/users/:id/status` | Set `ACTIVE` or `SUSPENDED` |
 | POST | `/api/v1/admin/users/:id/restore` | Restore deleted account |
 | GET | `/api/v1/admin/schematics` | List diagram metadata only |
@@ -62,6 +64,25 @@ Only the seeded `ADMIN` can use these endpoints. The admin cannot read diagram n
 | POST | `/api/v1/admin/schematics/:id/restore` | Restore a diagram |
 
 The admin account is excluded from user lists and cannot be edited through these routes. Account restoration makes its previously active diagrams available again; individually deleted diagrams stay deleted until restored.
+
+Admin create accepts `{ "fullName": "...", "email": "...", "password": "..." }`; edit accepts `{ "fullName": "...", "email": "..." }`. Account responses use `{ "id": "...", "fullName": "...", "email": "...", "role": "USER", "status": "ACTIVE", "deletedAt": null }`. The old `name` request field and `_id` response field are no longer accepted by this API. Update any callers before using the new backend. Stored bcrypt hashes use `passwordHash` after migration; existing hashes are not rehashed.
+
+## One-time account migration
+
+Set `MONGODB_URI`, `MONGODB_DATABASE`, and `JWT_SECRET` for the target database. Run a read-only preflight first:
+
+```bash
+npm run migrate-account-fields
+```
+
+The output reports total, ready, already current, incomplete, and conflicting account counts without personal data. Resolve field conflicts before applying. Incomplete records are reported and left untouched. After code checks, apply with:
+
+```bash
+ACCOUNT_MIGRATION_BACKUP_DIR=/tmp/audrolics-account-backups npm run migrate-account-fields -- --apply
+npm run migrate-account-fields
+```
+
+Apply creates a gzip `mongodump` archive of the configured database before any writes. The backup directory is restricted to mode `0700` and the archive to `0600`; keep the archive outside the repo and move it to secure long-term storage. The command verifies document counts, new field shapes, and hash preservation. A repeat apply should report zero ready accounts. To restore after investigating a failed migration, use `mongorestore --uri "$MONGODB_URI" --nsInclude "$MONGODB_DATABASE.*" --drop --gzip --archive /path/to/archive.gz` against the same database; this overwrites its current contents. The app is not deployed as part of this migration.
 
 Example:
 
@@ -79,4 +100,4 @@ npm test
 npm run build
 ```
 
-The MongoDB integration suite runs when `TEST_MONGODB_URI` points to a dedicated database whose name includes `audrolics_auth_test`; set `JWT_SECRET` alongside it. Without that variable, the integration suite is skipped.
+The MongoDB integration suite runs when `TEST_MONGODB_URI` points to a dedicated database whose name includes `audrolics_auth_test`; migration tests use a separate `TEST_MIGRATION_MONGODB_URI` whose database name includes `audrolics_migration_test`. Set `JWT_SECRET` alongside them. Without those variables, their respective suites are skipped.

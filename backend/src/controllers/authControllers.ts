@@ -10,7 +10,7 @@ import { ApiError } from "../utils/errors.js";
 
 const DAYS_30 = 30 * 24 * 60 * 60 * 1000;
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
-const publicUser = (user: IUser) => ({ id: String(user._id), name: user.name, email: user.email, role: user.role, status: user.status });
+const publicUser = (user: IUser) => ({ id: String(user._id), fullName: user.fullName, email: user.email, role: user.role });
 const cookieOptions = { httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "lax" as const, path: "/api/v1/auth" };
 const cookieToken = (request: Request) => (request.header("cookie") ?? "").split(";").map(v => v.trim()).find(v => v.startsWith("audrolics_refresh="))?.slice("audrolics_refresh=".length);
 // The session ID is included in the signed claims for immediate revocation.
@@ -26,13 +26,12 @@ const validEmail = (value: unknown) => typeof value === "string" && /^[^\s@]+@[^
 const validPassword = (value: unknown) => typeof value === "string" && value.length >= 8 && Buffer.byteLength(value, "utf8") <= 72;
 
 export const register = wrap(async (request, response) => {
-  const { name, fullName, email, password } = request.body ?? {};
-  const displayName = name ?? fullName;
-  if (typeof displayName !== "string" || !displayName.trim() || displayName.length > 120 || !validEmail(email) || !validPassword(password)) throw new ApiError(422, "E200", "Valid name, email, and password of 8 to 72 UTF-8 bytes are required.");
+  const { fullName, email, password, acceptedPolicies } = request.body ?? {};
+  if (typeof fullName !== "string" || !fullName.trim() || fullName.length > 120 || !validEmail(email) || !validPassword(password) || acceptedPolicies !== true) throw new ApiError(422, "E200", "Valid fullName, email, password of 8 to 72 UTF-8 bytes, and acceptedPolicies: true are required.");
   const normalizedEmail = email.trim().toLowerCase();
   if (await User.exists({ email: normalizedEmail })) throw new ApiError(409, "E409", "Email already exists.");
   let user: IUser;
-  try { user = await User.create({ name: displayName.trim(), email: normalizedEmail, password: await bcrypt.hash(password, 12), role: "USER" }); }
+  try { user = await User.create({ fullName: fullName.trim(), email: normalizedEmail, passwordHash: await bcrypt.hash(password, 12), role: "USER" }); }
   catch (error) { if ((error as { code?: number }).code === 11000) throw new ApiError(409, "E409", "Email already exists."); throw error; }
   response.status(201).json(await issueSession(user, response));
 });
@@ -50,7 +49,7 @@ export const login = wrap(async (request, response) => {
   else await LoginAttempt.findOneAndUpdate({ key }, { $set: { count: 1, windowStart: now, expiresAt: new Date(now.getTime() + 60_000) } }, { upsert: true });
   const user = await User.findOne({ email });
   if (user?.lockedUntil && user.lockedUntil > now) throw new ApiError(423, "E423", "Account temporarily locked.");
-  const good = user && await bcrypt.compare(password, user.password);
+  const good = user && await bcrypt.compare(password, user.passwordHash);
   if (!good) {
     if (user) { user.failedLogins += 1; if (user.failedLogins >= 10) { user.lockedUntil = new Date(now.getTime() + 15 * 60_000); user.failedLogins = 0; } await user.save(); }
     throw new ApiError(401, "E401", "Invalid email or password.");

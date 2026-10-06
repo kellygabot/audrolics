@@ -16,6 +16,8 @@ import {
   useState,
 } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import NextImage from "next/image";
+import { createPortal } from "react-dom";
 import "./builder.css";
 import { currentAccountId } from "@/lib/session";
 
@@ -294,8 +296,26 @@ function BuilderPage() {
   // Inspector validation and user-facing status do not belong in the saved graph.
   const [showAllErrors, setShowAllErrors] = useState(false);
   const [statusMessage, setStatusMessage] = useState("Ready to build");
-  const [rightPanelWidth, setRightPanelWidth] = useState(260);
+  const [rightPanelWidth, setRightPanelWidth] = useState(310);
   const [isResizingPanel, setIsResizingPanel] = useState(false);
+  const [strainerSettingsPosition, setStrainerSettingsPosition] = useState<{ left: number; top: number } | null>(null);
+  const strainerSettingsButtonRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    if (!strainerSettingsPosition) return;
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setStrainerSettingsPosition(null);
+        strainerSettingsButtonRef.current?.focus();
+      }
+    };
+    const closeOnResize = () => setStrainerSettingsPosition(null);
+    window.addEventListener("keydown", closeOnEscape);
+    window.addEventListener("resize", closeOnResize);
+    return () => {
+      window.removeEventListener("keydown", closeOnEscape);
+      window.removeEventListener("resize", closeOnResize);
+    };
+  }, [strainerSettingsPosition]);
   // Recovery, navigation, and API operations are separate from graph editing.
   const [recoveryCandidate, setRecoveryCandidate] =
     useState<SchematicModel | null>(null);
@@ -336,6 +356,7 @@ function BuilderPage() {
     selection.length === 1 && selection[0].kind === "link"
       ? model.links.find((link) => link.id === selection[0].id)
       : undefined;
+  const selectedElement = selectedNode ?? selectedLink;
   const validation = useMemo(() => validateModel(model), [model]);
   const isDirty = useMemo(
     () => JSON.stringify(toApiPayload(model)) !== lastSavedSnapshot,
@@ -397,7 +418,7 @@ function BuilderPage() {
   useEffect(() => {
     if (!isResizingPanel) return;
     const onMove = (event: PointerEvent) => {
-      setRightPanelWidth(clamp(window.innerWidth - event.clientX, 220, 400));
+      setRightPanelWidth(clamp(window.innerWidth - event.clientX, 280, 440));
     };
     const onUp = () => setIsResizingPanel(false);
     window.addEventListener("pointermove", onMove);
@@ -1515,9 +1536,6 @@ function BuilderPage() {
       ? normalizeBox(dragState.start, dragState.current)
       : null;
 
-  const dirtyIndicator = isDirty ? (
-    <span className="ml-2 inline-block h-2 w-2 rounded-full bg-amber-500" aria-label="Unsaved changes" title="Unsaved changes" />
-  ) : null;
 
   // Page layout: command bar, optional recovery notice, then palette/canvas/
   // inspector columns. The canvas remains the only place that owns gestures.
@@ -1525,9 +1543,8 @@ function BuilderPage() {
     <main className="builder-page flex h-dvh min-h-0 flex-col overflow-hidden bg-slate-100 text-slate-950">
       <header className="builder-header flex h-14 shrink-0 items-center justify-between border-b border-slate-300 bg-white px-4 shadow-sm">
         <div className="flex min-w-0 items-center gap-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded border border-cyan-700 bg-cyan-700 text-sm font-bold text-white">
-            A
-          </div>
+
+          <NextImage onClick={() => guardedNavigate("/schematics")} src="/logo.svg" alt="Logo" width={32} height={32} className="h-8 w-8 ml-4" />
           <div className="builder-file-name min-w-0">
             <div className="flex items-center">
               <input
@@ -1537,11 +1554,11 @@ function BuilderPage() {
                 }
                 className="w-52 rounded border border-transparent px-1 text-sm font-semibold focus:border-cyan-700 focus:outline-none"
                 aria-label="Schematic name"
-              />
-              {dirtyIndicator}
+              />  
             </div>
           </div>
           <span className="sr-only" role="status">{statusMessage}</span>
+          {isDirty && <span className="sr-only" aria-label="Unsaved changes">Unsaved changes</span>}
         </div>
 
         <div className="flex items-center gap-2">
@@ -1556,7 +1573,7 @@ function BuilderPage() {
             onClick={redo}
           />
           <div className="mx-1 h-7 w-px bg-slate-300" />
-          <ToolbarButton label="-" onClick={() => nudgeZoom(-ZOOM_STEP)} />
+          <ToolbarButton label="-" className="builder-zoom-button" onClick={() => nudgeZoom(-ZOOM_STEP)} />
           <input
             className="h-8 w-28 accent-cyan-700"
             type="range"
@@ -1567,13 +1584,13 @@ function BuilderPage() {
             onChange={(event) => updateZoom(Number(event.target.value))}
             aria-label="Canvas zoom"
           />
-          <ToolbarButton label="+" onClick={() => nudgeZoom(ZOOM_STEP)} />
+          <ToolbarButton label="+" className="builder-zoom-button" onClick={() => nudgeZoom(ZOOM_STEP)} />
           <output className="w-14 text-right text-xs tabular-nums text-slate-600">
             {model.canvas_state.zoom}%
           </output>
           <ToolbarButton label="Fit" onClick={fitDiagramToView} />
           <div className="mx-1 h-7 w-px bg-slate-300" />
-          <label className="flex items-center gap-1 text-xs font-medium text-slate-600">
+          <label className="builder-line-color flex items-center gap-3 text-xs font-medium text-slate-600">
             Line
             <input
               aria-label="Line color"
@@ -1632,11 +1649,31 @@ function BuilderPage() {
               className="h-8 w-14 rounded border border-slate-300 px-2 text-xs"
             />
           </label>
-          <details className="relative">
-            <summary className="flex h-8 cursor-pointer list-none items-center rounded border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 shadow-sm hover:border-cyan-700 hover:text-cyan-800">
-              Strainer settings
-            </summary>
-            <div className="absolute right-0 z-20 mt-2 w-64 rounded border border-slate-300 bg-white p-3 shadow-lg">
+          <button
+            ref={strainerSettingsButtonRef}
+            type="button"
+            aria-expanded={strainerSettingsPosition !== null}
+            aria-controls="strainer-settings-panel"
+            onClick={() => {
+              if (strainerSettingsPosition) {
+                setStrainerSettingsPosition(null);
+                return;
+              }
+              const rect = strainerSettingsButtonRef.current!.getBoundingClientRect();
+              setStrainerSettingsPosition({
+                left: Math.max(8, Math.min(rect.right - 256, window.innerWidth - 264)),
+                top: rect.bottom + 270 > window.innerHeight ? Math.max(8, rect.top - 270) : rect.bottom + 8,
+              });
+            }}
+            className="flex h-8 cursor-pointer items-center rounded border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 shadow-sm hover:border-cyan-700 hover:text-cyan-800"
+          >
+              Strainer Settings
+          </button>
+        </div>
+
+        {strainerSettingsPosition && createPortal(<>
+          <button type="button" aria-label="Close strainer settings" className="fixed inset-0 z-40 cursor-default bg-transparent" onClick={() => setStrainerSettingsPosition(null)} />
+          <div id="strainer-settings-panel" role="dialog" aria-label="Strainer Settings" className="fixed z-50 max-h-[calc(100dvh-16px)] w-64 max-w-[calc(100vw-16px)] overflow-y-auto rounded border border-slate-300 bg-white p-3 shadow-lg" style={strainerSettingsPosition}>
               <p className="mb-3 text-xs text-slate-600">
                 Headloss multipliers saved with this schematic.
               </p>
@@ -1671,9 +1708,8 @@ function BuilderPage() {
                   />
                 </label>
               ))}
-            </div>
-          </details>
-        </div>
+          </div>
+        </>, document.body)}
 
         <div className="flex items-center gap-2">
           <ToolbarButton
@@ -1691,16 +1727,6 @@ function BuilderPage() {
               }
               setSaveModalOpen(true);
             }}
-          />
-          <ToolbarButton
-            label={simulationRunning ? "Simulating…" : "Simulate"}
-            disabled={simulationRunning}
-            onClick={runSimulation}
-          />
-          <ToolbarButton
-            label={anomalyRunning ? "Detecting…" : "Detect Anomalies"}
-            disabled={anomalyRunning}
-            onClick={runAnomalyDetection}
           />
           <ToolbarButton
             label="Delete"
@@ -1795,6 +1821,16 @@ function BuilderPage() {
               )}
             </div>
             <div className="flex items-center gap-2">
+              <ToolbarButton
+                label={simulationRunning ? "Simulating…" : "Simulate"}
+                disabled={simulationRunning}
+                onClick={runSimulation}
+              />
+              <ToolbarButton
+                label={anomalyRunning ? "Detecting…" : "Detect Anomalies"}
+                disabled={anomalyRunning}
+                onClick={runAnomalyDetection}
+              />
               <ToolbarButton label="PNG" onClick={exportPng} />
               <ToolbarButton label="SVG" onClick={exportSvg} />
               <ToolbarButton label="CSV" onClick={exportCsv} />
@@ -1969,58 +2005,66 @@ function BuilderPage() {
                 : `${selection.length} selected`
             }
           />
-          <div className="min-h-0 flex-1 overflow-y-auto p-4">
-            {selection.length !== 1 && (
-              <EmptyProperties selectionCount={selection.length} />
-            )}
-            {selectedNode && (
-              <ElementForm
-                elementId={selectedNode.id}
-                label={selectedNode.label}
-                type={selectedNode.type}
-                params={selectedNode.input_params}
-                computed={selectedNode.computed}
-                errors={validation}
-                showAllErrors={showAllErrors}
-                onRename={renameSelected}
-                onParamChange={(key, value) =>
-                  updateNodeParam(selectedNode.id, key, value)
-                }
-                measurement={measurementForElement(selectedNode.id)}
-                onMeasurementChange={(value) =>
-                  setMeasurementForElement(
-                    selectedNode.id,
-                    "NODE",
-                    "PRESSURE_HEAD",
-                    value,
-                  )
-                }
-              />
-            )}
-            {selectedLink && (
-              <ElementForm
-                elementId={selectedLink.id}
-                label={selectedLink.label}
-                type={selectedLink.type}
-                params={selectedLink.input_params}
-                computed={selectedLink.computed}
-                errors={validation}
-                showAllErrors={showAllErrors}
-                onRename={renameSelected}
-                onParamChange={(key, value) =>
-                  updateLinkParam(selectedLink.id, key, value)
-                }
-                measurement={measurementForElement(selectedLink.id)}
-                onMeasurementChange={(value) =>
-                  setMeasurementForElement(
-                    selectedLink.id,
-                    "LINK",
-                    "FLOW_RATE",
-                    value,
-                  )
-                }
-              />
-            )}
+          <div className="builder-inspector-content min-h-0 flex-1 overflow-y-auto">
+            <div className="builder-inspector-content-inner">
+              <div className="builder-inspector-fields p-4">
+                {selection.length !== 1 && (
+                  <EmptyProperties selectionCount={selection.length} />
+                )}
+                {selectedNode && (
+                  <ElementForm
+                    elementId={selectedNode.id}
+                    label={selectedNode.label}
+                    type={selectedNode.type}
+                    params={selectedNode.input_params}
+                    errors={validation}
+                    showAllErrors={showAllErrors}
+                    onRename={renameSelected}
+                    onParamChange={(key, value) =>
+                      updateNodeParam(selectedNode.id, key, value)
+                    }
+                    measurement={measurementForElement(selectedNode.id)}
+                    onMeasurementChange={(value) =>
+                      setMeasurementForElement(
+                        selectedNode.id,
+                        "NODE",
+                        "PRESSURE_HEAD",
+                        value,
+                      )
+                    }
+                  />
+                )}
+                {selectedLink && (
+                  <ElementForm
+                    elementId={selectedLink.id}
+                    label={selectedLink.label}
+                    type={selectedLink.type}
+                    params={selectedLink.input_params}
+                    errors={validation}
+                    showAllErrors={showAllErrors}
+                    onRename={renameSelected}
+                    onParamChange={(key, value) =>
+                      updateLinkParam(selectedLink.id, key, value)
+                    }
+                    measurement={measurementForElement(selectedLink.id)}
+                    onMeasurementChange={(value) =>
+                      setMeasurementForElement(
+                        selectedLink.id,
+                        "LINK",
+                        "FLOW_RATE",
+                        value,
+                      )
+                    }
+                  />
+                )}
+              </div>
+              {selectedElement && (
+                <ComputedResults
+                  type={selectedElement.type}
+                  computed={selectedElement.computed}
+                />
+              )}
+            </div>
           </div>
         </aside>
       </div>
@@ -2111,6 +2155,7 @@ function PaletteGroup({
               )
             }
             aria-pressed={activeTool === tool.type}
+            aria-label={`${tool.label}: ${tool.detail}`}
             onClick={() => onPick(activeTool === tool.type ? null : tool.type)}
             className={`builder-palette-tool flex items-center gap-3 rounded border px-3 py-2 text-left transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-700 ${
               activeTool === tool.type
@@ -2122,9 +2167,8 @@ function PaletteGroup({
               {tool.code}
             </span>
             <span className="min-w-0">
-              <span className="block text-sm font-medium">{tool.label}</span>
-              <span className="builder-palette-detail block truncate text-xs text-slate-500">
-                {tool.detail}
+              <span className="block text-sm font-medium">
+                {tool.type === "FILTER" ? <>Strainer<br />/ Filter</> : tool.label}
               </span>
             </span>
           </button>
@@ -2525,7 +2569,6 @@ function ElementForm(props: {
   label: string;
   type: NodeType | LinkType;
   params: InputParams;
-  computed: ComputedValues;
   errors: Record<string, string>;
   showAllErrors: boolean;
   onRename: (value: string) => void;
@@ -2597,8 +2640,16 @@ function ElementForm(props: {
           </div>
         </section>
       )}
+    </div>
+  );
+}
 
-      <section className="builder-computed-results rounded border border-slate-200 bg-slate-100">
+function ComputedResults(props: {
+  type: NodeType | LinkType;
+  computed: ComputedValues;
+}) {
+  return (
+    <section className="builder-computed-results border-t border-slate-200 bg-slate-100">
         <div className="border-b border-slate-200 px-4 py-3">
           <h2 className="text-sm font-semibold text-slate-900">
             Computed Results
@@ -2626,8 +2677,7 @@ function ElementForm(props: {
             );
           })}
         </div>
-      </section>
-    </div>
+    </section>
   );
 }
 
@@ -2809,17 +2859,19 @@ function ToolbarButton({
   label,
   disabled = false,
   onClick,
+  className = "",
 }: {
   label: string;
   disabled?: boolean;
   onClick?: () => void;
+  className?: string;
 }) {
   return (
     <button
       type="button"
       disabled={disabled}
       onClick={onClick}
-      className="builder-toolbar-button h-8 rounded border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 shadow-sm transition hover:border-cyan-700 hover:text-cyan-800 focus-visible:outline focus-visible:outline-offset-2 focus-visible:outline-cyan-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 disabled:shadow-none"
+      className={`builder-toolbar-button h-8 rounded border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 shadow-sm transition hover:border-cyan-700 hover:text-cyan-800 focus-visible:outline focus-visible:outline-offset-2 focus-visible:outline-cyan-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 disabled:shadow-none ${className}`}
     >
       {label}
     </button>

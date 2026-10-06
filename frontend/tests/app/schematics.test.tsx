@@ -1,5 +1,5 @@
 vi.mock("@/lib/session", () => ({
-  useSession: () => ({ user: { id: "test-user", name: "Test User", email: "engineer@audrolics.dev", role: "USER" }, ready: true, logout: vi.fn().mockResolvedValue(undefined) }),
+  useSession: () => ({ user: { id: "test-user", fullName: "Test User", email: "engineer@audrolics.dev", role: "USER" }, ready: true, logout: vi.fn().mockResolvedValue(undefined) }),
   currentAccountId: () => "test-user",
   apiFetch: (path: string, init?: RequestInit) => fetch(path, init),
 }));

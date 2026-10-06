@@ -22,7 +22,7 @@ try {
   await User.init();
   if (await User.exists({ role: "ADMIN" })) throw new Error("Admin already exists.");
   if (await User.exists({ email })) throw new Error("That email already belongs to an account.");
-  await User.create({ name, email, password: await bcrypt.hash(password, 12), role: "ADMIN" });
+  await User.create({ fullName: name, email, passwordHash: await bcrypt.hash(password, 12), role: "ADMIN" });
   console.log(`Admin created: ${email}`);
   if (!suppliedPassword) console.log(`Temporary password: ${password}`);
 } finally {

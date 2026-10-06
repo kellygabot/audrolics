@@ -7,12 +7,13 @@ import { User } from "../src/models/User.js";
 import { Session } from "../src/models/Session.js";
 import { LoginAttempt } from "../src/models/LoginAttempt.js";
 import { SchematicModel } from "../src/models/Schematic.js";
+import { applyAccountMigration, planAccountMigration } from "../src/migrations/account-fields.js";
 
 const uri = process.env.TEST_MONGODB_URI;
 const suite = uri ? describe : describe.skip;
 const app = createApp();
 const password = "Password123!";
-const register = (email: string, role = "USER") => request(app).post("/api/v1/auth/register").send({ name: email.split("@")[0], email, password, role });
+const register = (email: string, role = "USER") => request(app).post("/api/v1/auth/register").send({ fullName: email.split("@")[0], email, password, acceptedPolicies: true, role });
 const bearer = (token: string) => ({ Authorization: `Bearer ${token}` });
 const cookie = (response: { headers: Record<string, string[] | string | undefined> }) => String(response.headers["set-cookie"]?.[0] ?? "").split(";")[0];
 
@@ -28,9 +29,10 @@ suite("MongoDB authentication and ownership", () => {
   it("registers only USER, rotates refresh tokens, and revokes logout", async () => {
     const signedUp = await register("alice@example.com", "ADMIN").expect(201);
     expect(signedUp.body.user.role).toBe("USER");
+    expect(signedUp.body.user).toEqual({ id: expect.any(String), fullName: "alice", email: "alice@example.com", role: "USER" });
     expect(signedUp.body.token).toBeTruthy();
-    expect(await bcrypt.compare(password, (await User.findOne({ email: "alice@example.com" }))!.password)).toBe(true);
-    await request(app).get("/api/v1/auth/me").set(bearer(signedUp.body.token)).expect(200);
+    expect(await bcrypt.compare(password, (await User.findOne({ email: "alice@example.com" }))!.passwordHash)).toBe(true);
+    expect((await request(app).get("/api/v1/auth/me").set(bearer(signedUp.body.token)).expect(200)).body.user).toEqual(signedUp.body.user);
     const session = await Session.findOne({ userId: signedUp.body.user.id });
     expect(session!.expiresAt.getTime() - Date.now()).toBeGreaterThan(29 * 24 * 60 * 60 * 1000);
     const firstCookie = cookie(signedUp);
@@ -42,6 +44,24 @@ suite("MongoDB authentication and ownership", () => {
     await request(app).post("/api/v1/auth/logout").set("Cookie", cookie(refreshed)).expect(204);
     await request(app).get("/api/v1/auth/me").set(bearer(refreshed.body.token)).expect(401);
     await request(app).post("/api/v1/auth/refresh").set("Cookie", cookie(refreshed)).expect(401);
+  });
+
+  it("requires the draft policy acknowledgment and rejects the old name alias", async () => {
+    const base = { fullName: "Alice", email: "alice@example.com", password };
+    await request(app).post("/api/v1/auth/register").send(base).expect(422);
+    await request(app).post("/api/v1/auth/register").send({ ...base, acceptedPolicies: false }).expect(422);
+    await request(app).post("/api/v1/auth/register").send({ name: "Alice", email: base.email, password, acceptedPolicies: true }).expect(422);
+    expect(await User.countDocuments()).toBe(0);
+  });
+
+  it("logs in with an existing bcrypt hash after migration", async () => {
+    const users = mongoose.connection.db!.collection("users");
+    const passwordHash = await bcrypt.hash(password, 12);
+    await users.insertOne({ name: "Legacy User", email: "legacy@example.com", password: passwordHash, role: "USER", status: "ACTIVE", deletedAt: null, failedLogins: 0, lockedUntil: null });
+    await applyAccountMigration(users, await planAccountMigration(users));
+    const loggedIn = await request(app).post("/api/v1/auth/login").send({ email: "legacy@example.com", password }).expect(200);
+    expect(loggedIn.body.user.fullName).toBe("Legacy User");
+    expect((await users.findOne({ email: "legacy@example.com" }))?.passwordHash).toBe(passwordHash);
   });
 
   it("expires after inactivity and rejects suspended or deleted accounts", async () => {
@@ -69,7 +89,7 @@ suite("MongoDB authentication and ownership", () => {
   it("isolates all schematic CRUD and saved analyses, with admin moderation", async () => {
     const alice = await register("alice@example.com").expect(201);
     const bob = await register("bob@example.com").expect(201);
-    const admin = await User.create({ name: "Admin", email: "admin@example.com", password: await bcrypt.hash(password, 12), role: "ADMIN" });
+    const admin = await User.create({ fullName: "Admin", email: "admin@example.com", passwordHash: await bcrypt.hash(password, 12), role: "ADMIN" });
     const adminLogin = await request(app).post("/api/v1/auth/login").send({ email: admin.email, password }).expect(200);
     await request(app).get("/api/v1/schematics").set("X-User-Id", alice.body.user.id).expect(401);
     await request(app).post("/api/v1/simulate").send({}).expect(401);
@@ -87,11 +107,12 @@ suite("MongoDB authentication and ownership", () => {
     const people = await request(app).get("/api/v1/admin/users").set(bearer(adminLogin.body.token)).expect(200);
     expect(people.body).toHaveLength(2);
     await request(app).delete(`/api/v1/admin/users/${admin.id}`).set(bearer(adminLogin.body.token)).expect(404);
-    await request(app).patch(`/api/v1/admin/users/${admin.id}`).set(bearer(adminLogin.body.token)).send({ name: "No", email: "no@example.com" }).expect(404);
-    const createdUser = await request(app).post("/api/v1/admin/users").set(bearer(adminLogin.body.token)).send({ name: "Carol", email: "carol@example.com", password }).expect(201);
+    await request(app).patch(`/api/v1/admin/users/${admin.id}`).set(bearer(adminLogin.body.token)).send({ fullName: "No", email: "no@example.com" }).expect(404);
+    const createdUser = await request(app).post("/api/v1/admin/users").set(bearer(adminLogin.body.token)).send({ fullName: "Carol", email: "carol@example.com", password }).expect(201);
     expect(createdUser.body.role).toBe("USER");
-    expect(createdUser.body.password).toBeUndefined();
-    await request(app).patch(`/api/v1/admin/users/${createdUser.body._id}`).set(bearer(adminLogin.body.token)).send({ name: "Carol B", email: "carol.b@example.com" }).expect(200);
+    expect(createdUser.body.passwordHash).toBeUndefined();
+    expect(createdUser.body).toEqual({ id: expect.any(String), fullName: "Carol", email: "carol@example.com", role: "USER", status: "ACTIVE", deletedAt: null });
+    await request(app).patch(`/api/v1/admin/users/${createdUser.body.id}`).set(bearer(adminLogin.body.token)).send({ fullName: "Carol B", email: "carol.b@example.com" }).expect(200);
     await request(app).patch(`/api/v1/admin/users/${bob.body.user.id}/status`).set(bearer(adminLogin.body.token)).send({ status: "SUSPENDED" }).expect(200);
     await request(app).get("/api/v1/schematics").set(bearer(bob.body.token)).expect(401);
     await request(app).patch(`/api/v1/admin/users/${bob.body.user.id}/status`).set(bearer(adminLogin.body.token)).send({ status: "ACTIVE" }).expect(200);

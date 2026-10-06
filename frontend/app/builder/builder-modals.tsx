@@ -76,7 +76,7 @@ export default function BuilderModals({
         <p>
           {save.leaving
             ? "Looks like you have some changes waiting to be saved. Save before leaving?"
-            : "Save your changes to this schematic?"}
+            : "Looks like you have some changes waiting to be saved. Save them before you go?"}
         </p>
         {save.leaving && (
           <button

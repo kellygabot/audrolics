@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { useState } from "react";
 import { SessionProvider, Protected, apiFetch, useSession } from "@/lib/session";
 
-const user = { id: "alice", name: "Alice", email: "alice@example.com", role: "USER", status: "ACTIVE" };
+const user = { id: "alice", fullName: "Alice", email: "alice@example.com", role: "USER" };
 const admin = { ...user, id: "admin", role: "ADMIN" };
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 function Controls() { const { user: active, ready, accept, logout } = useSession(); return <div><span>{ready ? active?.email ?? "signed-out" : "loading"}</span><button onClick={() => accept({ token: "alice-token", user: user as never })}>Alice</button><button onClick={() => accept({ token: "admin-token", user: admin as never })}>Admin</button><button onClick={() => accept({ token: "bob-token", user: { ...user, id: "bob", email: "bob@example.com" } as never })}>Bob</button><button onClick={() => void logout()}>Logout</button></div>; }

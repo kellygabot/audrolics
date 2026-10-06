@@ -2,14 +2,13 @@
 import { Fragment, createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 
-export type Account = { id: string; name: string; email: string; role: "USER" | "ADMIN"; status: "ACTIVE" | "SUSPENDED" };
+export type Account = { id: string; fullName: string; email: string; role: "USER" | "ADMIN" };
 type AuthResponse = { token: string; user: Account };
 let accessToken: string | null = null;
 let activeUser: Account | null = null;
 let refreshPromise: Promise<AuthResponse | null> | null = null;
 let sessionRevision = 0;
 const context = createContext<{ user: Account | null; ready: boolean; accept: (data: AuthResponse) => void; logout: () => Promise<void> } | null>(null);
-export const currentAccount = () => activeUser;
 export const currentAccountId = () => activeUser?.id ?? "";
 const setSession = (data: AuthResponse | null) => { sessionRevision++; accessToken = data?.token ?? null; activeUser = data?.user ?? null; window.dispatchEvent(new Event("audrolics-session")); };
 const refreshSession = () => {

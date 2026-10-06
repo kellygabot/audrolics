@@ -12,7 +12,8 @@
     "build": "tsc --noEmit false",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "seed-admin": "tsx src/scripts/seed-admin.ts"
+    "seed-admin": "tsx src/scripts/seed-admin.ts",
+    "migrate-account-fields": "tsx src/scripts/migrate-account-fields.ts"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

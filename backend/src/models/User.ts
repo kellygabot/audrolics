@@ -1,9 +1,9 @@
 import { Schema, model, type Document } from "mongoose";
 
 export interface IUser extends Document {
-  name: string;
+  fullName: string;
   email: string;
-  password: string;
+  passwordHash: string;
   role: "USER" | "ADMIN";
   status: "ACTIVE" | "SUSPENDED";
   deletedAt: Date | null;
@@ -14,9 +14,9 @@ export interface IUser extends Document {
 }
 
 const userSchema = new Schema<IUser>({
-  name: { type: String, required: true, trim: true },
+  fullName: { type: String, required: true, trim: true },
   email: { type: String, required: true, unique: true, lowercase: true, trim: true },
-  password: { type: String, required: true },
+  passwordHash: { type: String, required: true },
   role: { type: String, enum: ["USER", "ADMIN"], default: "USER", required: true },
   status: { type: String, enum: ["ACTIVE", "SUSPENDED"], default: "ACTIVE", required: true },
   deletedAt: { type: Date, default: null },

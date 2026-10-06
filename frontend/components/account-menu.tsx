@@ -57,7 +57,7 @@ export default function AccountMenu({ appearance = "filled" }: { appearance?: "f
         onClick={() => setOpen((value) => !value)}
         className={`flex max-w-[min(14rem,42vw)] items-center rounded-full px-5 py-2.5 text-sm font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#021eef] sm:max-w-64 sm:px-6 sm:text-base ${appearance === "outline" ? "border border-[#021eef] bg-white text-[#021eef] hover:bg-[#eef1ff]" : "bg-[#021eef] text-white shadow-[0_7px_18px_rgba(2,30,239,0.2)] hover:bg-[#0018c7]"}`}
       >
-        <span className="truncate">{user.name}</span>
+        <span className="truncate">{user.fullName}</span>
       </button>
 
       {open && (
@@ -79,7 +79,7 @@ export default function AccountMenu({ appearance = "filled" }: { appearance?: "f
             </button>
           </div>
           <div className="space-y-5 px-6 py-6">
-            <h2 className="break-words text-xl font-semibold leading-tight text-[#202638]">{user.name}</h2>
+            <h2 className="break-words text-xl font-semibold leading-tight text-[#202638]">{user.fullName}</h2>
             <dl className="space-y-4 text-sm">
               <div>
                 <dt className="font-medium text-[#6b7280]">Email</dt>

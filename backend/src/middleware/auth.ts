@@ -5,7 +5,7 @@ import { Session } from "../models/Session.js";
 import { User, type IUser } from "../models/User.js";
 import { ApiError } from "../utils/errors.js";
 
-declare global { namespace Express { interface Request { account?: IUser; sessionId?: string } } }
+declare global { namespace Express { interface Request { account?: IUser } } }
 
 export const requireAccount: RequestHandler = async (request, _response, next) => {
   try {
@@ -23,7 +23,6 @@ export const requireAccount: RequestHandler = async (request, _response, next) =
     const account = await User.findById(claims.sub);
     if (!account || account.deletedAt || account.status !== "ACTIVE") throw new ApiError(401, "E401", "Account unavailable.");
     request.account = account;
-    request.sessionId = String(session._id);
     next();
   } catch (error) { next(error); }
 };

@@ -22,6 +22,7 @@ export default function AuthModal({
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
+  const [acceptedPolicies, setAcceptedPolicies] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -42,7 +43,7 @@ export default function AuthModal({
       : "/api/v1/auth/login";
 
     const payload = mode === "signup"
-      ? { email, password, fullName }
+      ? { email, password, fullName, acceptedPolicies }
       : { email, password };
 
     try {
@@ -219,11 +220,11 @@ export default function AuthModal({
                   </p>
                 </div>
 
-                <div className="flex items-center gap-2 pt-2 pb-2">
-                  <input type="checkbox" required className="w-3.5 h-3.5 rounded border-gray-300 text-[#021eef] focus:ring-[#021eef]" />
-                  <span className="text-[0.65rem] text-gray-500">
-                    I agree to the <span className="font-bold text-black">Terms and Privacy Policy</span>.
-                  </span>
+                <div className="flex items-start gap-2 pt-2 pb-2">
+                  <input id="accepted-policies" type="checkbox" required checked={acceptedPolicies} onChange={event => setAcceptedPolicies(event.target.checked)} className="mt-0.5 h-4 w-4 rounded border-gray-300 text-[#021eef] focus:ring-[#021eef]" />
+                  <label htmlFor="accepted-policies" className="text-[0.65rem] text-gray-600 leading-relaxed">
+                    I have read and accept the <a href="/terms" target="_blank" rel="noopener noreferrer" className="font-bold text-[#021eef] underline">Terms</a> and <a href="/privacy" target="_blank" rel="noopener noreferrer" className="font-bold text-[#021eef] underline">Privacy notice</a> (drafts).
+                  </label>
                 </div>
 
                 <button
