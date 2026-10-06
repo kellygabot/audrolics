@@ -55,6 +55,8 @@ describe('BuilderPage', () => {
         expect(screen.getByText('Ready to build')).toHaveClass('sr-only')
         expect(screen.getByLabelText(/line color/i)).toBeInTheDocument()
         expect(screen.getByText(/strainer settings/i)).toBeInTheDocument()
+        expect(screen.queryByText('engineer@audrolics.dev')).not.toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: /account|sign out|log out/i })).not.toBeInTheDocument()
     })
 
     it('does not open the save modal when nothing has changed', () => {

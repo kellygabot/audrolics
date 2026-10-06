@@ -17,10 +17,10 @@ npm run dev
 Create the sole administrator once:
 
 ```bash
-npm run seed-admin -- 'Admin Name' admin@example.com 'a-long-private-password'
+npm run seed-admin -- 'Admin Name' admin@example.com
 ```
 
-The command refuses to create another admin. Public registration and admin-created accounts always have the `USER` role. Give admin-created passwords to users outside the app. Deleted account emails remain reserved.
+The command generates and prints a strong temporary password once, and refuses to create another admin. Store the password securely and change it through an approved operational process if needed. Public registration and admin-created accounts always have the `USER` role. Give admin-created passwords to users outside the app. Deleted account emails remain reserved.
 
 ## Authentication
 

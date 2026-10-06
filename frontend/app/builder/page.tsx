@@ -17,7 +17,7 @@ import {
 } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import "./builder.css";
-import { currentAccountId, useSession } from "@/lib/session";
+import { currentAccountId } from "@/lib/session";
 
 import BuilderModals, { type BuilderErrorItem } from "./builder-modals";
 
@@ -273,7 +273,6 @@ const id = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
 function BuilderPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { user, logout } = useSession();
 
   // Persistent document data and its undo history.
   const [model, setModel] = useState(defaultModel);
@@ -1525,7 +1524,6 @@ function BuilderPage() {
   return (
     <main className="builder-page flex h-dvh min-h-0 flex-col overflow-hidden bg-slate-100 text-slate-950">
       <header className="builder-header flex h-14 shrink-0 items-center justify-between border-b border-slate-300 bg-white px-4 shadow-sm">
-        <div className="flex items-center gap-3 text-xs"><span>{user?.name} · {user?.email}</span><button type="button" onClick={() => void logout().then(() => router.replace("/"))}>Log out</button></div>
         <div className="flex min-w-0 items-center gap-3">
           <div className="flex h-9 w-9 items-center justify-center rounded border border-cyan-700 bg-cyan-700 text-sm font-bold text-white">
             A

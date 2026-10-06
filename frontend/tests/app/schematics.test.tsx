@@ -117,28 +117,29 @@ describe("SchematicsPage", () => {
     expect(headerNewSchematic).toHaveLength(0);
   });
 
-  it("profile chip reveals account details", async () => {
+  it("account button reveals only the available account details", async () => {
     render(<SchematicsPage />);
 
     await screen.findByText("Alpha Network");
 
-    const chip = screen.getByRole("button", { name: /engineer@audrolics\.dev/i });
+    const chip = screen.getByRole("button", { name: "Test User" });
     fireEvent.click(chip);
 
     const dialog = await screen.findByRole("dialog");
     const content = within(dialog);
-    expect(content.getByText("Your profile")).toBeInTheDocument();
-    expect(content.getAllByText("engineer@audrolics.dev").length).toBeGreaterThanOrEqual(1);
-    expect(content.getByText("USER")).toBeInTheDocument();
+    expect(content.getByRole("heading", { name: "Test User" })).toBeInTheDocument();
+    expect(content.getByText("engineer@audrolics.dev")).toBeInTheDocument();
+    expect(content.getByText("User")).toBeInTheDocument();
+    expect(content.queryByText(/linkedin|phone/i)).not.toBeInTheDocument();
     expect(content.getByRole("button", { name: /sign out/i })).toBeInTheDocument();
   });
 
-  it("Sign out closes the profile popover", async () => {
+  it("Sign out closes the account card", async () => {
     render(<SchematicsPage />);
 
     await screen.findByText("Alpha Network");
 
-    const chip = screen.getByRole("button", { name: /engineer@audrolics\.dev/i });
+    const chip = screen.getByRole("button", { name: "Test User" });
     fireEvent.click(chip);
 
     // Dialog opens
