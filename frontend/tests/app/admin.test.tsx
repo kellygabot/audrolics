@@ -13,6 +13,7 @@ beforeEach(() => {
   apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
     if (path === "/api/v1/admin/users" && !init?.method) return json(users);
     if (path === "/api/v1/admin/schematics" && !init?.method) return json(diagrams);
+    if (path.startsWith("/api/v1/admin/audit-logs?")) return json({ items: [{ id: "log-1", timestamp: "2026-01-02T00:00:00.000Z", user_id: "alice", schematic_id: "d1", network_size: 3, status: "FAILED", error_code: "E200" }], total: 1, page: 1, pageSize: 25 });
     if (path === "/api/v1/admin/users" && init?.method === "POST") {
       const values = JSON.parse(String(init.body));
       const person = { id: "new-user", fullName: values.fullName, email: values.email, status: "ACTIVE", deletedAt: null };
@@ -85,4 +86,15 @@ it("updates the selected user's name and email", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Save user" }));
   await waitFor(() => expect(screen.getByRole("button", { name: "Alice Smith" })).toBeTruthy());
   expect(apiFetch).toHaveBeenCalledWith("/api/v1/admin/users/alice", expect.objectContaining({ method: "PATCH" }));
+});
+
+it("shows read-only simulation history and filters it", async () => {
+  render(<AdminPage />);
+  await screen.findByText("Alice");
+  fireEvent.click(screen.getByRole("button", { name: "Simulation history" }));
+  expect(await screen.findByText("d1")).toBeTruthy();
+  expect(screen.getByText("E200")).toBeTruthy();
+  expect(screen.getByRole("table")).toBeTruthy();
+  fireEvent.change(screen.getByRole("combobox", { name: "Filter by outcome" }), { target: { value: "FAILED" } });
+  await waitFor(() => expect(apiFetch).toHaveBeenCalledWith("/api/v1/admin/audit-logs?page=1&status=FAILED", expect.anything()));
 });

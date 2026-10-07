@@ -111,6 +111,6 @@ describe("analysis routes for saved and inline drafts", () => {
     const response = await request(app).post("/simulate").send({ schematic_id: "draft-1" });
     expect(response.status).toBe(422);
     expect(response.body.detail.error_code).toBe("E104");
-    expect(audit.insert).toHaveBeenCalledWith(expect.objectContaining({ status: "NON_CONVERGENCE" }));
+    expect(audit.insert).toHaveBeenCalledWith(expect.objectContaining({ status: "NON_CONVERGENCE", error_code: "E104" }));
   });
 });

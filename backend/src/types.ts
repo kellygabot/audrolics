@@ -175,4 +175,5 @@ export type AuditLogEntry = {
   schematic_id?: string;
   network_size: number;
   status: "SUCCESS" | "FAILED" | "NON_CONVERGENCE";
+  error_code?: string;
 };

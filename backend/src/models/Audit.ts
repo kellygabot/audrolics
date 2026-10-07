@@ -7,6 +7,7 @@ const auditLogSchema = new mongoose.Schema(
     schematic_id: { type: String, required: false },
     network_size: { type: Number, required: true },
     status: { type: String, enum: ["SUCCESS", "FAILED", "NON_CONVERGENCE"], required: true },
+    error_code: { type: String, required: false },
   },
   {
     collection: "audit_logs",

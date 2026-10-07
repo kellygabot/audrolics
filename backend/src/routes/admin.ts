@@ -4,9 +4,31 @@ import { Types } from "mongoose";
 import { User } from "../models/User.js";
 import { Session } from "../models/Session.js";
 import { SchematicModel } from "../models/Schematic.js";
+import { AuditLogModel } from "../models/Audit.js";
 import { ApiError } from "../utils/errors.js";
 
 export const adminRouter = Router();
+adminRouter.get("/audit-logs", async (req, res, next) => { try {
+  const page = Number(req.query.page ?? 1);
+  const status = req.query.status;
+  const userId = req.query.userId;
+  if (!Number.isSafeInteger(page) || page < 1 || page > 10000 ||
+      (status !== undefined && !["SUCCESS", "FAILED", "NON_CONVERGENCE"].includes(String(status))) ||
+      (userId !== undefined && (typeof userId !== "string" || !Types.ObjectId.isValid(userId)))) {
+    throw new ApiError(422, "E200", "Invalid audit log filter or page.");
+  }
+  const filter = {
+    ...(status ? { status } : {}),
+    ...(userId ? { user_id: userId } : {}),
+  };
+  const pageSize = 25;
+  const [items, total] = await Promise.all([
+    AuditLogModel.find(filter).select({ timestamp: 1, user_id: 1, schematic_id: 1, network_size: 1, status: 1, error_code: 1 })
+      .sort({ timestamp: -1, _id: -1 }).skip((page - 1) * pageSize).limit(pageSize).lean(),
+    AuditLogModel.countDocuments(filter),
+  ]);
+  res.json({ items: items.map(({ _id, ...entry }) => ({ id: String(_id), ...entry })), total, page, pageSize });
+} catch (e) { next(e); } });
 const managedUser = (user: { _id: unknown; fullName: string; email: string; role: string; status: string; deletedAt: Date | null }) => ({ id: String(user._id), fullName: user.fullName, email: user.email, role: user.role, status: user.status, deletedAt: user.deletedAt });
 const validId = (id: string) => { if (!Types.ObjectId.isValid(id)) throw new ApiError(404, "E404", "User not found."); return id; };
 const userFilter = (id: string) => ({ _id: validId(id), role: "USER" });
