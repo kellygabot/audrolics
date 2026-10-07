@@ -17,6 +17,7 @@ const schematicSchema = new mongoose.Schema(
     visibility: { type: flexibleSchema, default: () => ({}) },
     created_at: { type: String, required: true },
     updated_at: { type: String, required: true },
+    deleted_at: { type: String, default: null },
   },
   {
     collection: "schematics",

@@ -1,4 +1,4 @@
-export default function LandingPage() {
+export default function LandingPage({ onCreate }: { onCreate: () => void }) {
   return (
     // min-h-[calc(100dvh-5.5rem)] calculates exact screen height minus the h-22 header.
     // overflow-hidden prevents any background clipping from causing scrollbars.
@@ -17,9 +17,9 @@ export default function LandingPage() {
         </p>
         
         <div className="bg-white px-10 py-4 rounded-2xl w-max shadow-[8px_8px_20px_rgba(0,0,0,0.4)] transition-transform hover:scale-105">
-          <a href="/schematics" className="opacity-57 text-[1.5rem]">
+          <button type="button" onClick={onCreate} className="opacity-57 text-[1.5rem]">
             Create Now!
-          </a>
+          </button>
         </div>
       </div>
       

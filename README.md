@@ -43,7 +43,7 @@ Audrolics models a water network as a graph:
 - Nodes: junctions, reservoirs, and tanks.
 - Links: pipes, pumps, valves, and strainers/filters.
 
-The frontend owns the interactive schematic-building experience. The backend owns validation, persistence, and the API boundary for future simulation, anomaly localization, audit logging, and authentication work.
+The frontend owns the interactive schematic-building experience. The backend owns validation, persistence, simulation, anomaly localization, audit logging, and authentication.
 
 ```text
 audrolics/
@@ -193,15 +193,15 @@ Before simulation, the backend should also block networks with:
 
 ## API Surface
 
-The SRS defines the production API base as `https://api.audrolics.com/api/v1`. All endpoints except `/auth/*` require a bearer token.
+The API base is `/api/v1`. Protected routes require a Bearer access token. See `backend/README.md` for the full route and session contract.
 
-Required endpoint groups:
+Current endpoint groups:
 
-- Auth: `POST /auth/signup`, `/auth/verify`, `/auth/login`, `/auth/refresh`, `/auth/reset-password-request`, `/auth/reset-password`.
+- Auth: `POST /auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout`; `GET /auth/me`.
 - Schematics: `GET /schematics`, `POST /schematics`, `GET /schematics/{id}`, `PUT /schematics/{id}`, `DELETE /schematics/{id}`.
 - Simulation: `POST /simulate`.
 - Anomaly detection: `POST /anomalies`.
-- Export: `GET /export/{schematic_id}?format=png|svg|csv|json`.
+- Admin: regular account management and schematic metadata moderation under `/admin`.
 
 Standard errors use `{ error_code, message, element_id?, attribute? }`. Preserve the SRS error-code families when implementing validation and API responses:
 
@@ -212,11 +212,9 @@ Standard errors use `{ error_code, message, element_id?, attribute? }`. Preserve
 
 Current implementation status:
 
-- Implemented in the Node.js/Express/Mongoose backend: `GET /api/v1/schematics`, `POST /api/v1/schematics`, `GET /api/v1/schematics/{id}`, `PUT /api/v1/schematics/{id}`, and `DELETE /api/v1/schematics/{id}`.
-- Temporary ownership is handled by the `X-User-Id` header until authentication is implemented.
-- Backend validation is authoritative for saved schematic payloads.
-- Simulation, anomaly detection, authentication, audit logging, and export API routes are still planned work.
-- Computed fields exist in the saved data model as read-only placeholders until the solver is wired in.
+- MongoDB-backed `USER` and sole seeded `ADMIN` accounts, 15-minute access tokens, rotating refresh sessions, and login protection are implemented.
+- Schematic ownership comes from the verified account. Soft-deleted diagrams are hidden until an admin restores them.
+- Simulation, anomaly detection, and audit logging are implemented. Export is currently handled by the frontend.
 
 ## Units And Engineering Conventions
 
@@ -239,7 +237,7 @@ Do not silently normalize the UI inputs into a single displayed unit system. Nor
 
 - Accuracy: match EPANET 2.2 equivalent inputs within `+/-0.01 m` node pressure head, `+/-0.1 L/s` link flow, and `+/-0.01 m` link headloss.
 - Performance: simulate networks up to 50 nodes and 100 links in under 2 seconds at the 95th percentile on a standard 8 GB laptop; database load under 1 second; save under 500 ms; element selection response under 100 ms.
-- Security: bcrypt password hashing with work factor at least 12, HTTPS in production, 15-minute JWT access tokens, HTTP-only 7-day refresh token cookie, auth rate limiting, input sanitization, and secrets only in environment variables.
+- Security: bcrypt password hashing with work factor at least 12, HTTPS in production, 15-minute JWT access tokens, HTTP-only refresh cookie with a 30-day inactivity expiry, auth rate limiting, input sanitization, and secrets only in environment variables.
 - Usability: no CAD experience required, tooltips for inputs, contextual help from any screen, and shortcut help via `Ctrl+?`.
 - Accessibility: WCAG 2.1 AA, keyboard navigation, text contrast at least 4.5:1, and anomaly highlights that use pattern/texture in addition to color.
 - Compatibility: latest supported Chrome, Edge, and Firefox families per the SRS baseline.

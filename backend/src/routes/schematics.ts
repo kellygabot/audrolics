@@ -27,13 +27,6 @@ schematicsRouter.use((_request, _response, next) => {
   }
 });
 
-const requireUserId = (value: unknown) => {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new ApiError(401, "E400", "X-User-Id header is required until authentication is implemented.");
-  }
-  return value.trim();
-};
-
 const raiseNotFound = (schematicId: string) => {
   throw new ApiError(
     404,
@@ -44,7 +37,7 @@ const raiseNotFound = (schematicId: string) => {
 
 schematicsRouter.get("/", async (request, response, next) => {
   try {
-    const userId = requireUserId(request.header("X-User-Id"));
+    const userId = String(request.account!._id);
     response.json(await repository.list(userId));
   } catch (error) {
     next(error);
@@ -53,7 +46,7 @@ schematicsRouter.get("/", async (request, response, next) => {
 
 schematicsRouter.post("/", async (request, response, next) => {
   try {
-    const userId = requireUserId(request.header("X-User-Id"));
+    const userId = String(request.account!._id);
     const payload = normalizeDraftSchematicPayload(request.body);
     response.status(201).json(await repository.create(userId, payload));
   } catch (error) {
@@ -64,7 +57,7 @@ schematicsRouter.post("/", async (request, response, next) => {
 
 schematicsRouter.get("/:schematicId", async (request, response, next) => {
   try {
-    const userId = requireUserId(request.header("X-User-Id"));
+    const userId = String(request.account!._id);
     const document = await repository.get(userId, request.params.schematicId);
     if (!document) raiseNotFound(request.params.schematicId);
     response.json(document);
@@ -75,7 +68,7 @@ schematicsRouter.get("/:schematicId", async (request, response, next) => {
 
 schematicsRouter.put("/:schematicId", async (request, response, next) => {
   try {
-    const userId = requireUserId(request.header("X-User-Id"));
+    const userId = String(request.account!._id);
     const payload = normalizeDraftSchematicPayload(request.body);
     const document = await repository.update(userId, request.params.schematicId, payload);
     if (!document) raiseNotFound(request.params.schematicId);
@@ -88,7 +81,7 @@ schematicsRouter.put("/:schematicId", async (request, response, next) => {
 
 schematicsRouter.delete("/:schematicId", async (request, response, next) => {
   try {
-    const userId = requireUserId(request.header("X-User-Id"));
+    const userId = String(request.account!._id);
     const deleted = await repository.delete(userId, request.params.schematicId);
     if (!deleted) raiseNotFound(request.params.schematicId);
     response.status(204).send();

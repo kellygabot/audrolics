@@ -36,6 +36,16 @@ The builder should support:
 
 ## Development
 
+### Code map
+
+- `app/builder/page.tsx` connects editing, canvas gestures, analysis, and save flows.
+- `app/builder/builder-model.ts` defines the saved schematic shape and defaults; `builder-graph.ts` owns pure graph, field, and validation rules.
+- `app/builder/builder-canvas.tsx` renders SVG elements; `builder-palette.tsx`, `builder-controls.tsx`, and `builder-inspector.tsx` render the surrounding tools and properties.
+- `app/builder/use-builder-history.ts` owns undo and redo snapshots; `use-builder-recovery.ts` manages dirty state and browser backups, while `builder-recovery.ts` reads account-scoped drafts. `lib/builder-storage.ts` owns schematic and analysis API requests.
+- `app/admin`, `app/schematics`, and `components/auth` own their page-specific flows; `lib/session.tsx` owns shared session refresh and authenticated requests.
+
+The `tests/app` files cover builder editing and persistence alongside admin, auth, schematics, and session behavior.
+
 Run the development server:
 
 ```bash
@@ -75,5 +85,4 @@ fallback. `NEXT_PUBLIC_API_BASE_URL` remains supported for existing setups, but
 the server-only `BACKEND_API_BASE_URL` is preferred. Do not hardcode localhost
 in components or client data modules.
 
-Until Feature 4 authentication is implemented, schematic API calls send `X-User-Id`.
-The current builder uses `dev-user` by default and lets you edit that value in the UI.
+Schematic and analysis requests use a short-lived Bearer token. The session client refreshes it with an HTTP-only rotating cookie; saved diagrams are scoped to the signed-in account. Builder recovery drafts use account-specific localStorage keys.

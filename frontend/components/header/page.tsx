@@ -1,15 +1,16 @@
 'use client';
 
+import { useSession } from "@/lib/session";
 import Image from 'next/image';
+import AccountMenu from "@/components/account-menu";
 
 interface HeaderProps {
   onOpenAuth?: (mode: 'login' | 'signup') => void;
 } 
 
 export default function Header({ onOpenAuth }: HeaderProps) {
+  const { user } = useSession();
   return (
-    // Changed <main> to <header> for correct HTML semantics.
-    // Added shrink-0 so it doesn't get squished by flex containers.
     <header className="h-22 w-full shrink-0 flex bg-background px-6 text-foreground shadow-[0_4px_30px_rgba(0,0,0,0.3)] sticky top-0 z-40 items-center">
       <div className="flex items-center gap-2">
           <Image src="/logo.svg" alt="Logo" width={32} height={32} className="h-8 w-8 ml-4" />
@@ -17,7 +18,7 @@ export default function Header({ onOpenAuth }: HeaderProps) {
       </div>
       
       <div className="flex items-center gap-2 ml-auto">
-        <button 
+        {user ? <AccountMenu /> : <><button
           onClick={() => onOpenAuth?.('signup')} 
           className="text-l opacity-85 border-2 border-[#8a8a8a]/90 rounded-xl pt-[0.30rem] pb-2 px-4 mr-3 transition-colors hover:bg-black/5"
         >
@@ -28,7 +29,7 @@ export default function Header({ onOpenAuth }: HeaderProps) {
           className="text-l text-white font-bold bg-[#021eef] rounded-xl pt-1.5 pb-2 px-4.5 mr-4 transition-colors hover:bg-[#021eef]/90"
         >
           Log in
-        </button>
+        </button></>}
       </div>
     </header>
   );

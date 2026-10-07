@@ -1,28 +1,29 @@
-import { Schema, model, Document } from 'mongoose';
+import { Schema, model, type Document } from "mongoose";
 
 export interface IUser extends Document {
+  fullName: string;
   email: string;
-  password: string;
+  passwordHash: string;
+  role: "USER" | "ADMIN";
+  status: "ACTIVE" | "SUSPENDED";
+  deletedAt: Date | null;
+  failedLogins: number;
+  lockedUntil: Date | null;
   createdAt: Date;
+  updatedAt: Date;
 }
 
 const userSchema = new Schema<IUser>({
-  email: {
-    type: String,
-    required: [true, 'Email is required'],
-    unique: true,
-    lowercase: true,
-    trim: true,
-  },
-  password: {
-    type: String,
-    required: [true, 'Password is required'],
-    minlength: [6, 'Password must be at least 6 characters long'],
-  },
-  createdAt: {
-    type: Date,
-    default: Date.now,
-  },
-});
+  fullName: { type: String, required: true, trim: true },
+  email: { type: String, required: true, unique: true, lowercase: true, trim: true },
+  passwordHash: { type: String, required: true },
+  role: { type: String, enum: ["USER", "ADMIN"], default: "USER", required: true },
+  status: { type: String, enum: ["ACTIVE", "SUSPENDED"], default: "ACTIVE", required: true },
+  deletedAt: { type: Date, default: null },
+  failedLogins: { type: Number, default: 0 },
+  lockedUntil: { type: Date, default: null },
+}, { timestamps: true });
 
-export const User = model<IUser>('User', userSchema);
+userSchema.index({ role: 1 }, { unique: true, partialFilterExpression: { role: "ADMIN" } });
+
+export const User = model<IUser>("User", userSchema);

@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import Image from "next/image";
+import { useRouter } from "next/navigation";
+import { useSession } from "@/lib/session";
 
 interface AuthModalProps {
   mode: "login" | "signup";
@@ -14,10 +16,13 @@ export default function AuthModal({
   onClose,
   onSwitchMode,
 }: AuthModalProps) {
+  const router = useRouter();
+  const { accept } = useSession();
   // Form State
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
+  const [acceptedPolicies, setAcceptedPolicies] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -38,7 +43,7 @@ export default function AuthModal({
       : "/api/v1/auth/login";
 
     const payload = mode === "signup"
-      ? { email, password, fullName }
+      ? { email, password, fullName, acceptedPolicies }
       : { email, password };
 
     try {
@@ -53,18 +58,14 @@ export default function AuthModal({
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.message || "An error occurred during authentication.");
+        throw new Error(data.detail?.message || data.message || "An error occurred during authentication.");
       }
 
-      // Save JWT token in localStorage
-      if (data.token) {
-        localStorage.setItem("token", data.token);
-      }
-
-      // Close modal on success
+      accept(data);
       onClose();
-    } catch (err: any) {
-      setError(err.message || "Failed to connect to server.");
+      router.push(data.user.role === "ADMIN" ? "/admin" : "/schematics");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to connect to server.");
     } finally {
       setLoading(false);
     }
@@ -173,6 +174,7 @@ export default function AuthModal({
                     <input
                       type="text"
                       value={fullName}
+                      required
                       onChange={(e) => setFullName(e.target.value)}
                       placeholder="Juan Dela Cruz"
                       className="w-full pl-9 pr-4 py-2.5 rounded-[0.75rem] bg-[#f4f4f5] border border-gray-200 text-sm focus:outline-none focus:border-[#021eef] focus:bg-white focus:ring-1 focus:ring-[#021eef] transition-colors"
@@ -208,21 +210,21 @@ export default function AuthModal({
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       required
-                      minLength={6}
-                      placeholder="At least 6 characters"
+                      minLength={8}
+                      placeholder="At least 8 characters"
                       className="w-full pl-9 pr-4 py-2.5 rounded-[0.75rem] bg-[#f4f4f5] border border-gray-200 text-sm focus:outline-none focus:border-[#021eef] focus:bg-white focus:ring-1 focus:ring-[#021eef] transition-colors"
                     />
                   </div>
                   <p className="text-[0.60rem] text-[#8a8a8a] mt-1.5 ml-1">
-                    Use 6+ characters.
+                    Use 8+ characters.
                   </p>
                 </div>
 
-                <div className="flex items-center gap-2 pt-2 pb-2">
-                  <input type="checkbox" required className="w-3.5 h-3.5 rounded border-gray-300 text-[#021eef] focus:ring-[#021eef]" />
-                  <span className="text-[0.65rem] text-gray-500">
-                    I agree to the <span className="font-bold text-black">Terms and Privacy Policy</span>.
-                  </span>
+                <div className="flex items-start gap-2 pt-2 pb-2">
+                  <input id="accepted-policies" type="checkbox" required checked={acceptedPolicies} onChange={event => setAcceptedPolicies(event.target.checked)} className="mt-0.5 h-4 w-4 rounded border-gray-300 text-[#021eef] focus:ring-[#021eef]" />
+                  <label htmlFor="accepted-policies" className="text-[0.65rem] text-gray-600 leading-relaxed">
+                    I have read and accept the <a href="/terms" target="_blank" rel="noopener noreferrer" className="font-bold text-[#021eef] underline">Terms</a> and <a href="/privacy" target="_blank" rel="noopener noreferrer" className="font-bold text-[#021eef] underline">Privacy notice</a> (drafts).
+                  </label>
                 </div>
 
                 <button

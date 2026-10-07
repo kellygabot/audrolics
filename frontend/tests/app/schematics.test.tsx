@@ -1,3 +1,8 @@
+vi.mock("@/lib/session", () => ({
+  useSession: () => ({ user: { id: "test-user", fullName: "Test User", email: "engineer@audrolics.dev", role: "USER" }, ready: true, logout: vi.fn().mockResolvedValue(undefined) }),
+  currentAccountId: () => "test-user",
+  apiFetch: (path: string, init?: RequestInit) => fetch(path, init),
+}));
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
@@ -112,28 +117,29 @@ describe("SchematicsPage", () => {
     expect(headerNewSchematic).toHaveLength(0);
   });
 
-  it("profile chip reveals placeholder email and role", async () => {
+  it("account button reveals only the available account details", async () => {
     render(<SchematicsPage />);
 
     await screen.findByText("Alpha Network");
 
-    const chip = screen.getByRole("button", { name: /engineer@audrolics\.dev/i });
+    const chip = screen.getByRole("button", { name: "Test User" });
     fireEvent.click(chip);
 
     const dialog = await screen.findByRole("dialog");
     const content = within(dialog);
-    expect(content.getByText("Your profile")).toBeInTheDocument();
-    expect(content.getAllByText("engineer@audrolics.dev").length).toBeGreaterThanOrEqual(1);
-    expect(content.getByText("ENGINEER")).toBeInTheDocument();
+    expect(content.getByRole("heading", { name: "Test User" })).toBeInTheDocument();
+    expect(content.getByText("engineer@audrolics.dev")).toBeInTheDocument();
+    expect(content.getByText("User")).toBeInTheDocument();
+    expect(content.queryByText(/linkedin|phone/i)).not.toBeInTheDocument();
     expect(content.getByRole("button", { name: /sign out/i })).toBeInTheDocument();
   });
 
-  it("Sign out closes popover (placeholder router.replace call)", async () => {
+  it("Sign out closes the account card", async () => {
     render(<SchematicsPage />);
 
     await screen.findByText("Alpha Network");
 
-    const chip = screen.getByRole("button", { name: /engineer@audrolics\.dev/i });
+    const chip = screen.getByRole("button", { name: "Test User" });
     fireEvent.click(chip);
 
     // Dialog opens

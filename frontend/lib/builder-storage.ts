@@ -1,3 +1,4 @@
+import { apiFetch } from "./session";
 export type StoredSchematicSummary = {
   id: string;
   name: string;
@@ -100,15 +101,14 @@ const SIMULATE_PATH = "/api/v1/simulate";
 const ANOMALIES_PATH = "/api/v1/anomalies";
 const SERVER_MANAGED_FIELDS = new Set(["id", "user_id", "created_at", "updated_at"]);
 
-const requestJson = async <T>(path: string, userId: string, init: RequestInit = {}): Promise<T> => {
+const requestJson = async <T>(path: string, _userId: string, init: RequestInit = {}): Promise<T> => {
   // Backend boundary:
   // This client only depends on the /api/v1/schematics HTTP contract. Next.js
   // rewrites the same-origin request to the Express/Mongoose backend.
-  const response = await fetch(path, {
+  const response = await apiFetch(path, {
     ...init,
     headers: {
       ...(init.body ? { "Content-Type": "application/json" } : {}),
-      "X-User-Id": userId || "dev-user",
       ...init.headers,
     },
   });
@@ -122,7 +122,7 @@ const requestJson = async <T>(path: string, userId: string, init: RequestInit = 
   return body as T;
 };
 
-export const listSchematics = async (userId = "dev-user"): Promise<StoredSchematicSummary[]> =>
+export const listSchematics = async (userId: string): Promise<StoredSchematicSummary[]> =>
   requestJson<StoredSchematicSummary[]>(SCHEMATICS_PATH, userId);
 
 export const saveSchematic = async <T extends Record<string, unknown>>(

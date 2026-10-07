@@ -10,13 +10,6 @@
   export const anomaliesRouter = Router();
   const schematicsRepository = new SchematicRepository();
 
-  const requireUserId = (value: unknown): string => {
-    if (typeof value !== "string" || value.trim().length === 0) {
-      throw new ApiError(401, "E400", "X-User-Id header is required until authentication is implemented.");
-    }
-    return value.trim();
-  };
-
   const normalizeAnomalyPayload = (body: AnomalyPayload): SchematicPayload => {
     const raw: Record<string, unknown> = {
       name: (body as Record<string, unknown>).name ?? "Inline anomaly check",
@@ -118,7 +111,7 @@
   };
 
   anomaliesRouter.post("/", async (request, response, next) => {
-    requireUserId(request.header("X-User-Id"));
+    const userId = String(request.account!._id);
 
     try {
       const body = request.body as AnomalyPayload;
@@ -130,7 +123,7 @@
 
       if (body.schematic_id) {
         const document = await schematicsRepository.get(
-          request.header("X-User-Id")!.trim(),
+          userId,
           body.schematic_id,
         );
         if (!document) {
