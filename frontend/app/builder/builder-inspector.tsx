@@ -18,7 +18,8 @@ export function ElementForm(props: {
 }) {
   const fields = fieldsForType(props.type, props.params);
   return (
-    <div className="space-y-4">
+    <div className="builder-inspector-content-inner">
+      <div className="builder-inspector-fields space-y-4">
       <section className="builder-element-identity rounded border border-slate-200 bg-white p-4">
         <label className="text-xs font-medium text-slate-500">Label</label>
         <input
@@ -80,6 +81,7 @@ export function ElementForm(props: {
           </div>
         </section>
       )}
+      </div>
 
       <section className="builder-computed-results rounded border border-slate-200 bg-slate-100">
         <div className="border-b border-slate-200 px-4 py-3">
@@ -282,4 +284,3 @@ export function EmptyProperties({ selectionCount }: { selectionCount: number }) 
     </section>
   );
 }
-

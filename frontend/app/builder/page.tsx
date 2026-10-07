@@ -1267,7 +1267,6 @@ function BuilderPage() {
         <aside className="builder-palette flex min-h-0 flex-col border-r border-slate-300 bg-white">
           <PanelHeader
             title="Element Palette"
-            detail="Click or drag onto canvas"
           />
           <div className="min-h-0 flex-1 overflow-y-auto p-3">
             <PaletteGroup
@@ -1510,9 +1509,11 @@ function BuilderPage() {
                 : `${selection.length} selected`
             }
           />
-          <div className="min-h-0 flex-1 overflow-y-auto p-4">
+          <div className="builder-inspector-content min-h-0 flex-1 overflow-y-auto">
             {selection.length !== 1 && (
-              <EmptyProperties selectionCount={selection.length} />
+              <div className="p-4">
+                <EmptyProperties selectionCount={selection.length} />
+              </div>
             )}
             {selectedNode && (
               <ElementForm

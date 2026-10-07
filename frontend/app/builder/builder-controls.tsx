@@ -27,11 +27,11 @@ export function ToolbarButton({
   );
 }
 
-export function PanelHeader({ title, detail }: { title: string; detail: string }) {
+export function PanelHeader({ title, detail }: { title: string; detail?: string }) {
   return (
     <div className="builder-panel-heading border-b border-slate-200 px-4 py-3">
       <h2 className="text-sm font-semibold text-slate-900">{title}</h2>
-      <p className="mt-1 text-xs text-slate-500">{detail}</p>
+      {detail && <p className="mt-1 text-xs text-slate-500">{detail}</p>}
     </div>
   );
 }

@@ -272,9 +272,6 @@
 
 .builder-palette-tool > span:last-child {
   width: 100%;
-}
-
-.builder-palette-tool > span:last-child > span:first-child {
   color: #77777d;
   font-size: 11px;
   font-weight: 400;
@@ -351,6 +348,7 @@
 .builder-inspector-content-inner {
   display: flex;
   min-height: 100%;
+  width: 100%;
   flex-direction: column;
 }
 
@@ -413,6 +411,7 @@
 
 .builder-computed-results {
   flex: none;
+  width: 100%;
   margin-top: auto;
   border-right: 0;
   border-bottom: 0;

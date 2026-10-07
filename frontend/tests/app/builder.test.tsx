@@ -54,11 +54,12 @@ describe('BuilderPage', () => {
         expect(screen.getByRole('button', { name: /save/i })).toBeInTheDocument()
         expect(screen.getByText('Ready to build')).toHaveClass('sr-only')
         expect(screen.getByLabelText(/line color/i)).toBeInTheDocument()
-        expect(screen.getByRole('button', { name: /reservoir.*hatched triangle/i })).toHaveTextContent('Reservoir')
-        expect(screen.getByText(/hatched triangle/i)).toBeInTheDocument()
-        const strainer = screen.getByRole('button', { name: /strainer.*inline device/i })
+        expect(screen.getByRole('button', { name: /reservoir/i })).toHaveTextContent('Reservoir')
+        expect(screen.queryByText(/hatched triangle/i)).not.toBeInTheDocument()
+        const strainer = screen.getByRole('button', { name: /strainer \/ filter/i })
         expect(strainer).toHaveTextContent('Strainer / Filter')
-        expect(strainer.querySelector('.builder-palette-detail')).toBeInTheDocument()
+        expect(strainer.querySelector('.builder-palette-detail')).toBeNull()
+        expect(screen.queryByText(/click or drag onto canvas/i)).not.toBeInTheDocument()
         expect(screen.getByText(/strainer settings/i)).toBeInTheDocument()
         expect(screen.queryByText('engineer@audrolics.dev')).not.toBeInTheDocument()
         expect(screen.queryByRole('button', { name: /account|sign out|log out/i })).not.toBeInTheDocument()
@@ -80,7 +81,7 @@ describe('BuilderPage', () => {
     it('keeps computed results at the end of the scrolling properties content', () => {
         const view = render(<BuilderPage />)
         const canvas = view.getByRole('application', { name: /schematic builder canvas/i })
-        fireEvent.click(view.getByRole('button', { name: /reservoir.*hatched triangle/i }))
+        fireEvent.click(view.getByRole('button', { name: /reservoir/i }))
         fireEvent.pointerDown(canvas, { clientX: 100, clientY: 120, pointerId: 1, button: 0 })
         fireEvent.pointerUp(canvas, { clientX: 100, clientY: 120, pointerId: 1 })
 
@@ -89,8 +90,11 @@ describe('BuilderPage', () => {
         const results = inspector.querySelector('.builder-computed-results')!
         expect(fields).toContainElement(view.getByText('Input Parameters'))
         expect(results).toContainElement(view.getByText('Computed Results'))
+        expect(fields.closest('.builder-inspector-fields')).toBeInTheDocument()
+        expect(fields.closest('.builder-inspector-fields')?.nextElementSibling).toBe(results)
+        expect(results.parentElement).toBe(inspector.querySelector('.builder-inspector-content-inner'))
         expect(results.parentElement?.lastElementChild).toBe(results)
-        expect(results.closest('.overflow-y-auto')).toBeInTheDocument()
+        expect(results.closest('.builder-inspector-content')).toBeInTheDocument()
     })
 
     it('does not open the save modal when nothing has changed', () => {
@@ -108,15 +112,15 @@ describe('BuilderPage', () => {
         const view = render(<BuilderPage />)
 
         const canvas = view.getByRole('application', { name: /schematic builder canvas/i })
-        fireEvent.click(view.getByRole('button', { name: /reservoir.*hatched triangle/i }))
+        fireEvent.click(view.getByRole('button', { name: /reservoir/i }))
         fireEvent.pointerDown(canvas, { clientX: 100, clientY: 120, pointerId: 1, button: 0 })
         fireEvent.pointerUp(canvas, { clientX: 100, clientY: 120, pointerId: 1 })
 
-        fireEvent.click(view.getByRole('button', { name: /junction.*small circle/i }))
+        fireEvent.click(view.getByRole('button', { name: /junction/i }))
         fireEvent.pointerDown(canvas, { clientX: 260, clientY: 120, pointerId: 2, button: 0 })
         fireEvent.pointerUp(canvas, { clientX: 260, clientY: 120, pointerId: 2 })
 
-        fireEvent.click(view.getByRole('button', { name: /pipe.*connects two nodes/i }))
+        fireEvent.click(view.getByRole('button', { name: /pipe/i }))
         const nodes = view.container.querySelectorAll('[data-element-id^="node-"]')
         expect(nodes).toHaveLength(2)
         fireEvent.pointerDown(nodes[0], { clientX: 100, clientY: 120, pointerId: 3, button: 0 })
@@ -136,18 +140,18 @@ describe('BuilderPage', () => {
             fireEvent.pointerUp(canvas, { clientX: x, clientY: 120, pointerId })
         }
 
-        placeNode(/reservoir.*hatched triangle/i, 100, 1)
-        placeNode(/junction.*small circle/i, 260, 2)
-        placeNode(/tank.*rectangle/i, 420, 3)
+        placeNode(/reservoir/i, 100, 1)
+        placeNode(/junction/i, 260, 2)
+        placeNode(/tank/i, 420, 3)
         const nodes = view.container.querySelectorAll('[data-element-id^="node-"]')
         expect(Array.from(nodes, node => node.querySelector('image')?.getAttribute('href')))
             .toEqual(['/reservoir.svg', '/junction.svg', '/tank.svg'])
 
         const linkTools = [
-            [/pipe.*connects two nodes/i, null],
-            [/pump.*inline device/i, '/pump_clean.svg'],
-            [/valve.*inline device/i, '/valve_clean.svg'],
-            [/strainer.*inline device/i, '/strainer_clean.svg'],
+            [/pipe/i, null],
+            [/pump/i, '/pump_clean.svg'],
+            [/valve/i, '/valve_clean.svg'],
+            [/strainer \/ filter/i, '/strainer_clean.svg'],
         ] as const
         linkTools.forEach(([name, image], index) => {
             fireEvent.click(view.getByRole('button', { name }))
@@ -167,7 +171,7 @@ describe('BuilderPage', () => {
         expect(Array.from(drawingLayer.children).indexOf(pipe))
             .toBeLessThan(Array.from(drawingLayer.children).indexOf(nodes[0]))
 
-        fireEvent.click(view.getByRole('button', { name: /pump.*inline device/i }))
+        fireEvent.click(view.getByRole('button', { name: /pump/i }))
         fireEvent.pointerDown(nodes[1], { clientX: 260, clientY: 120, pointerId: 8, button: 0 })
         fireEvent.pointerUp(nodes[0], { clientX: 100, clientY: 120, pointerId: 8 })
         const reversedPump = view.container.querySelectorAll('[data-element-id^="link-"]')[4]
@@ -179,7 +183,7 @@ describe('BuilderPage', () => {
         const canvas = view.getByRole('application', { name: /schematic builder canvas/i })
         const positions = [[100, 100], [100, 260], [260, 420]] as const
         positions.forEach(([x, y], index) => {
-            fireEvent.click(view.getByRole('button', { name: /junction.*small circle/i }))
+            fireEvent.click(view.getByRole('button', { name: /junction/i }))
             fireEvent.pointerDown(canvas, { clientX: x, clientY: y, pointerId: index + 1, button: 0 })
             fireEvent.pointerUp(canvas, { clientX: x, clientY: y, pointerId: index + 1 })
         })
@@ -189,8 +193,8 @@ describe('BuilderPage', () => {
             fireEvent.pointerDown(nodes[first], { clientX: positions[first][0], clientY: positions[first][1], pointerId, button: 0 })
             fireEvent.pointerUp(nodes[second], { clientX: positions[second][0], clientY: positions[second][1], pointerId })
         }
-        connect(/pump.*inline device/i, 0, 1, 4)
-        connect(/valve.*inline device/i, 1, 2, 5)
+        connect(/pump/i, 0, 1, 4)
+        connect(/valve/i, 1, 2, 5)
         const links = view.container.querySelectorAll('[data-element-id^="link-"]')
         expect(links[0].querySelector('image')?.getAttribute('transform')).toMatch(/^rotate\(0 /)
         expect(links[1].querySelector('image')?.getAttribute('transform')).toMatch(/^rotate\(45 /)
@@ -200,12 +204,12 @@ describe('BuilderPage', () => {
         const view = render(<BuilderPage />)
         const canvas = view.getByRole('application', { name: /schematic builder canvas/i })
         for (const [index, x] of [100, 260].entries()) {
-            fireEvent.click(view.getByRole('button', { name: /junction.*small circle/i }))
+            fireEvent.click(view.getByRole('button', { name: /junction/i }))
             fireEvent.pointerDown(canvas, { clientX: x, clientY: 120, pointerId: index + 1, button: 0 })
             fireEvent.pointerUp(canvas, { clientX: x, clientY: 120, pointerId: index + 1 })
         }
         const nodes = view.container.querySelectorAll('[data-element-id^="node-"]')
-        for (const [index, name] of [/pump.*inline device/i, /strainer.*inline device/i].entries()) {
+        for (const [index, name] of [/pump/i, /strainer \/ filter/i].entries()) {
             fireEvent.click(view.getByRole('button', { name }))
             fireEvent.pointerDown(nodes[0], { clientX: 100, clientY: 120, pointerId: index + 3, button: 0 })
             fireEvent.pointerUp(nodes[1], { clientX: 260, clientY: 120, pointerId: index + 3 })

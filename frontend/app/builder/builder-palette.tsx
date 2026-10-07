@@ -6,32 +6,28 @@ export const nodeTools: {
   type: NodeType;
   label: string;
   code: string;
-  detail: string;
 }[] = [
-    { type: "JUNCTION", label: "Junction", code: "J", detail: "Small circle" },
+    { type: "JUNCTION", label: "Junction", code: "J" },
     {
       type: "RESERVOIR",
       label: "Reservoir",
       code: "R",
-      detail: "Hatched triangle",
     },
-    { type: "TANK", label: "Tank", code: "T", detail: "Rectangle / cylinder" },
+    { type: "TANK", label: "Tank", code: "T" },
   ];
 
 export const linkTools: {
   type: LinkType;
   label: string;
   code: string;
-  detail: string;
 }[] = [
-    { type: "PIPE", label: "Pipe", code: "P", detail: "Connects two nodes" },
-    { type: "PUMP", label: "Pump", code: "PU", detail: "Inline device — place between Junctions" },
-    { type: "VALVE", label: "Valve", code: "V", detail: "Inline device — place between Junctions" },
+    { type: "PIPE", label: "Pipe", code: "P" },
+    { type: "PUMP", label: "Pump", code: "PU" },
+    { type: "VALVE", label: "Valve", code: "V" },
     {
       type: "FILTER",
       label: "Strainer / Filter",
       code: "F",
-      detail: "Inline device — place between Junctions",
     },
   ];
 
@@ -44,7 +40,7 @@ export function PaletteGroup({
   onPick,
 }: {
   title: string;
-  tools: { type: ToolType; label: string; code: string; detail: string }[];
+  tools: { type: ToolType; label: string; code: string }[];
   activeTool: ToolType | null;
   onPick: (tool: ToolType | null) => void;
 }) {
@@ -75,16 +71,10 @@ export function PaletteGroup({
             <span className="builder-palette-symbol flex h-9 w-10 shrink-0 items-center justify-center rounded border border-slate-300 bg-slate-50 text-xs font-bold">
               {tool.code}
             </span>
-            <span className="min-w-0">
-              <span className="block text-sm font-medium">{tool.label}</span>
-              <span className="builder-palette-detail block truncate text-xs text-slate-500">
-                {tool.detail}
-              </span>
-            </span>
+            <span className="min-w-0 block text-sm font-medium">{tool.label}</span>
           </button>
         ))}
       </div>
     </section>
   );
 }
-
