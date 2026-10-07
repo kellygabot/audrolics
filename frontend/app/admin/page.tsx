@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import AccountMenu from "@/components/account-menu";
 import { apiFetch } from "@/lib/session";
+import AuditLogView from "./audit-log-view";
 
 type ManagedUser = { id: string; fullName: string; email: string; status: "ACTIVE" | "SUSPENDED"; deletedAt: string | null };
 type Diagram = { id: string; user_id: string; name: string; updated_at: string; deleted_at: string | null };
@@ -38,6 +39,7 @@ export default function AdminPage() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [view, setView] = useState<"users" | "audit">("users");
 
   const reload = useCallback(async (deletedView = false) => {
     const [people, items] = await Promise.all([
@@ -106,15 +108,19 @@ export default function AdminPage() {
         <Image src="/logo.svg" alt="" width={34} height={34} className="h-8 w-8" />
         <span className="hidden text-lg font-medium text-[#4d4d50] sm:inline">Audrolics</span>
       </Link>
-      <div className="relative mx-auto w-full max-w-3xl">
+      {view === "users" && <div className="relative mx-auto w-full max-w-3xl">
         <label htmlFor="admin-user-search" className="sr-only">Search users by name, email, or ID</label>
         <input id="admin-user-search" type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search user by ID or name" className="h-12 w-full rounded-full bg-[#eef1ff] py-2 pl-5 pr-12 text-sm text-[#30323b] placeholder:text-[#696d7c] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#021eef] sm:pl-7 sm:text-base" />
         <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" className="pointer-events-none absolute right-4 top-1/2 h-6 w-6 -translate-y-1/2 text-[#929ff3]"><circle cx="10.8" cy="10.8" r="6.5" stroke="currentColor" strokeWidth="1.8" /><path d="m16 16 5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
-      </div>
+      </div>}
+      <nav aria-label="Admin sections" className="ml-auto flex shrink-0 gap-2 text-xs font-semibold sm:text-sm">
+        <button type="button" aria-current={view === "users" ? "page" : undefined} onClick={() => setView("users")} className={`rounded-full px-3 py-2 ${view === "users" ? "bg-[#0924dd] text-white" : "text-[#102ac6] hover:bg-[#eef1ff]"}`}>Users</button>
+        <button type="button" aria-current={view === "audit" ? "page" : undefined} onClick={() => setView("audit")} className={`rounded-full px-3 py-2 ${view === "audit" ? "bg-[#0924dd] text-white" : "text-[#102ac6] hover:bg-[#eef1ff]"}`}>Simulation history</button>
+      </nav>
       <AccountMenu appearance="outline" />
     </header>
     {error && <div role="alert" className="border-b border-red-200 bg-red-50 px-6 py-3 text-sm text-red-800">{error}</div>}
-    <div className="grid min-h-[calc(100dvh-5.5rem)] lg:h-[calc(100dvh-5.5rem)] lg:grid-cols-[minmax(300px,31%)_minmax(0,1fr)] lg:overflow-hidden">
+    {view === "audit" ? <AuditLogView users={users} /> : <div className="grid min-h-[calc(100dvh-5.5rem)] lg:h-[calc(100dvh-5.5rem)] lg:grid-cols-[minmax(300px,31%)_minmax(0,1fr)] lg:overflow-hidden">
       <aside className="flex min-h-[24rem] flex-col border-b border-[#d8d8dc] lg:min-h-0 lg:border-b-0 lg:border-r" aria-label="User management">
         <div className="flex flex-wrap gap-2 border-b border-[#d8d8dc] px-5 py-4 sm:px-7">
           <button type="button" disabled={busy || showDeleted} onClick={beginCreate} className="inline-flex min-h-9 items-center gap-1.5 rounded-full bg-[#05bf6b] px-4 text-xs font-bold uppercase tracking-wide text-white transition hover:bg-[#009f58] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#05bf6b] disabled:cursor-not-allowed disabled:bg-[#e7e7e7] disabled:text-[#858585]"><ActionIcon kind="create" />Create</button>
@@ -164,6 +170,6 @@ export default function AdminPage() {
           </li>)}</ul>}
         </> : <div className="flex min-h-[15rem] items-center justify-center rounded-xl border border-dashed border-[#d8dbe5] text-center text-sm text-[#686b76]">Select a user to view their schematic diagrams.</div>}
       </section>
-    </div>
+    </div>}
   </main>;
 }

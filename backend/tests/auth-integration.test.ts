@@ -7,6 +7,7 @@ import { User } from "../src/models/User.js";
 import { Session } from "../src/models/Session.js";
 import { LoginAttempt } from "../src/models/LoginAttempt.js";
 import { SchematicModel } from "../src/models/Schematic.js";
+import { AuditLogModel } from "../src/models/Audit.js";
 import { applyAccountMigration, planAccountMigration } from "../src/migrations/account-fields.js";
 
 const uri = process.env.TEST_MONGODB_URI;
@@ -21,9 +22,9 @@ suite("MongoDB authentication and ownership", () => {
   beforeAll(async () => {
     if (!uri || !new URL(uri).pathname.includes("audrolics_auth_test")) throw new Error("Use a dedicated audrolics_auth_test database.");
     await mongoose.connect(uri);
-    await Promise.all([User.init(), Session.init(), LoginAttempt.init(), SchematicModel.init()]);
+    await Promise.all([User.init(), Session.init(), LoginAttempt.init(), SchematicModel.init(), AuditLogModel.init()]);
   });
-  beforeEach(async () => { await Promise.all([User.deleteMany({}), Session.deleteMany({}), LoginAttempt.deleteMany({}), SchematicModel.deleteMany({})]); });
+  beforeEach(async () => { await Promise.all([User.deleteMany({}), Session.deleteMany({}), LoginAttempt.deleteMany({}), SchematicModel.deleteMany({}), AuditLogModel.deleteMany({})]); });
   afterAll(async () => { await mongoose.disconnect(); });
 
   it("registers only USER, rotates refresh tokens, and revokes logout", async () => {
@@ -128,5 +129,20 @@ suite("MongoDB authentication and ownership", () => {
     await request(app).post(`/api/v1/admin/users/${alice.body.user.id}/restore`).set(bearer(adminLogin.body.token)).expect(200);
     const aliceAgain = await request(app).post("/api/v1/auth/login").send({ email: "alice@example.com", password }).expect(200);
     await request(app).get(`/api/v1/schematics/${id}`).set(bearer(aliceAgain.body.token)).expect(200);
+  });
+
+  it("shows paginated simulation audit metadata only to admins", async () => {
+    const user = await register("alice@example.com").expect(201);
+    const admin = await User.create({ fullName: "Admin", email: "admin@example.com", passwordHash: await bcrypt.hash(password, 12), role: "ADMIN" });
+    const adminLogin = await request(app).post("/api/v1/auth/login").send({ email: admin.email, password }).expect(200);
+    await AuditLogModel.create({ timestamp: "2026-01-02T00:00:00.000Z", user_id: user.body.user.id, schematic_id: "diagram-1", network_size: 3, status: "FAILED", error_code: "E200" });
+    await AuditLogModel.create({ timestamp: "2026-01-01T00:00:00.000Z", user_id: user.body.user.id, network_size: 2, status: "SUCCESS" });
+
+    await request(app).get("/api/v1/admin/audit-logs").expect(401);
+    await request(app).get("/api/v1/admin/audit-logs").set(bearer(user.body.token)).expect(403);
+    const response = await request(app).get("/api/v1/admin/audit-logs?status=FAILED&page=1").set(bearer(adminLogin.body.token)).expect(200);
+    expect(response.body.total).toBe(1);
+    expect(response.body.items).toEqual([{ id: expect.any(String), timestamp: "2026-01-02T00:00:00.000Z", user_id: user.body.user.id, schematic_id: "diagram-1", network_size: 3, status: "FAILED", error_code: "E200" }]);
+    await request(app).get("/api/v1/admin/audit-logs?page=0").set(bearer(adminLogin.body.token)).expect(422);
   });
 });

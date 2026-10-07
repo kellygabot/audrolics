@@ -80,6 +80,7 @@ simulationRouter.post("/", async (request, response, next) => {
       schematic_id: schematicId,
       network_size: networkSize,
       status: error instanceof ApiError && error.errorCode === "E104" ? "NON_CONVERGENCE" : "FAILED",
+      error_code: error instanceof ApiError ? error.errorCode : error instanceof ValidationError ? "E200" : "E500",
     }).catch(() => {
       // Audit failures must not hide the original simulation error.
     });

@@ -62,8 +62,10 @@ Only the seeded `ADMIN` can use these endpoints. The admin cannot read diagram n
 | GET | `/api/v1/admin/schematics` | List diagram metadata only |
 | DELETE | `/api/v1/admin/schematics/:id` | Soft-delete a diagram |
 | POST | `/api/v1/admin/schematics/:id/restore` | Restore a diagram |
+| GET | `/api/v1/admin/audit-logs` | Read simulation history metadata; optional `userId`, `status`, and `page` filters (25 records per page) |
 
 The admin account is excluded from user lists and cannot be edited through these routes. Account restoration makes its previously active diagrams available again; individually deleted diagrams stay deleted until restored.
+Audit entries include time, user ID, optional schematic ID, network size, outcome, and an error code for new failed runs. Older entries may not have an error code. Schematic contents and computed results are not included.
 
 Admin create accepts `{ "fullName": "...", "email": "...", "password": "..." }`; edit accepts `{ "fullName": "...", "email": "..." }`. Account responses use `{ "id": "...", "fullName": "...", "email": "...", "role": "USER", "status": "ACTIVE", "deletedAt": null }`. The old `name` request field and `_id` response field are no longer accepted by this API. Update any callers before using the new backend. Stored bcrypt hashes use `passwordHash` after migration; existing hashes are not rehashed.
 
