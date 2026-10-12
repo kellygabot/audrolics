@@ -97,16 +97,13 @@ export function ElementForm(props: {
             const value = props.computed[key];
             const display = value === null || value === undefined ? "Pending" : String(value);
             return (
-              <div
-                key={key}
-                className="flex justify-between rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs"
-              >
-                <span className="font-medium text-slate-600">
+              <div key={key} className="builder-computed-result">
+                <span className="builder-computed-label">
                   {key === "energy" ? "Energy (kWh per 1 h)" : labelize(key)}
                 </span>
-                <span className={value === null || value === undefined ? "text-slate-400" : "text-slate-800"}>
+                <output className={`builder-computed-value ${value === null || value === undefined ? "builder-computed-value--pending" : ""}`}>
                   {display}
-                </span>
+                </output>
               </div>
             );
           })}
@@ -172,9 +169,11 @@ function FieldControl(props: {
         </div>
         <div className="space-y-2">
           {points.map((point, index) => (
-            <div key={index} className="grid grid-cols-[1fr_1fr_auto] gap-2">
+            <div key={index} className="builder-curve-row">
               <input
                 placeholder="Flow"
+                aria-label={`Row ${index + 1} flow`}
+                inputMode="decimal"
                 value={point.flow}
                 onChange={(event) =>
                   props.onChange(
@@ -185,10 +184,12 @@ function FieldControl(props: {
                     ),
                   )
                 }
-                className="h-8 rounded border border-slate-300 px-2 text-xs"
+                className="builder-curve-input rounded border border-slate-300 px-2 text-xs"
               />
               <input
-                placeholder={yKey}
+                placeholder={yKey === "head" ? "Head" : "Headloss"}
+                aria-label={`Row ${index + 1} ${yKey}`}
+                inputMode="decimal"
                 value={point[yKey] ?? ""}
                 onChange={(event) =>
                   props.onChange(
@@ -199,7 +200,7 @@ function FieldControl(props: {
                     ),
                   )
                 }
-                className="h-8 rounded border border-slate-300 px-2 text-xs"
+                className="builder-curve-input rounded border border-slate-300 px-2 text-xs"
               />
               <button
                 type="button"
@@ -208,9 +209,10 @@ function FieldControl(props: {
                     points.filter((_, itemIndex) => itemIndex !== index),
                   )
                 }
-                className="rounded border border-slate-300 px-2 text-xs"
+                aria-label={`Remove curve row ${index + 1}`}
+                className="builder-curve-remove rounded border border-slate-300 text-lg"
               >
-                Remove
+                &times;
               </button>
             </div>
           ))}
